@@ -1,0 +1,34 @@
+[package]
+name = "aqrv"
+version = "0.2.0"
+description = "The Argon QR Vault's format (AQRV specification, https://github.com/bitcoinpasada/aqrv): seal and open, nothing else"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+faraday-crypto = { workspace = true }
+faraday-bip = { workspace = true }
+faraday-text = { workspace = true }
+# Only `Algorithm::Argon2id`, for faraday-crypto's one Argon2 call.
+argon2.workspace = true
+chacha20.workspace = true
+unicode-normalization.workspace = true
+zeroize.workspace = true
+subtle.workspace = true
+
+[dev-dependencies]
+faraday-codec = { workspace = true }
+faraday-crypto = { workspace = true, features = ["unchecked"] }
+faraday-files = { workspace = true }
+serde_json = { workspace = true }
+
+[features]
+# The entries the fuzz targets aqrv_item and aqrv_envelope feed. Off by
+# default; only the fuzz crate (fuzz/Cargo.toml) turns it on, no app does.
+fuzzing = []
+
+[lints]
+workspace = true

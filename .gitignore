@@ -1,0 +1,8 @@
+/target
+**/target/
+/fuzz/artifacts/
+/fuzz/coverage/
+# What a fuzz run writes into the corpus is named after its hash and has no
+# extension; the seeds are the files with one.
+/fuzz/corpus/*/*
+!/fuzz/corpus/*/*.*

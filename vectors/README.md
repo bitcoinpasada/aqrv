@@ -2,7 +2,7 @@
 
 Test vectors for the Argon QR Vault (AQRV) ([`AQRV.md`](../AQRV.md) §11): one
 small secret under a passphrase, in 32, 53 or 62 bytes. The Rust library and
-command line in [`aqrv/`](https://github.com/bitcoinpasada/faraday/tree/main/aqrv) in Faraday's repository and `check.py` read them, all by Faraday's authors; the
+command line in [`rust/`](rust) in this repository and `check.py` read them, all by Faraday's authors; the
 vectors are for outside implementations, and for a reviewer who writes a reader
 from the document alone.
 
@@ -130,6 +130,5 @@ to 1 GiB of memory (the one Argon2id run at the 1 GiB step at a time).
 
 ## The Rust library
 
-Faraday's repository holds the differential test of its Rust library against `check.py`, `diff.py`, with the library's own tests over these cases:
-[`tools/vectors/aqrv/`](https://github.com/bitcoinpasada/faraday/tree/main/tools/vectors/aqrv). It shows the two readers agree; it is not independent proof
+[`diff.py`](diff.py) compares the Rust library in [`rust/`](../rust) with `check.py` on many generated codes, and the library's own tests run every case here. It shows the two readers agree; it is not independent proof
 that either is right, since both are by Faraday's authors, and an outside implementation is still what [`AQRV.md`](../AQRV.md) §11 asks for.

@@ -24,14 +24,95 @@ it.
 
 ## The reference implementation
 
-A Rust library, a command line and a desktop test app are in the
-[`aqrv/` folder of Faraday's repository](https://github.com/bitcoinpasada/faraday/tree/main/aqrv).
-They are by the same authors as the specification, so they are not the outside
-implementation the specification asks for. Downloads of the desktop test app
-and the command line, for Linux and Windows on x86-64, are at
-[faradayoffline.app/aqrv](https://faradayoffline.app/aqrv/#try) and on the
-[aqrv-test-1 release](https://github.com/bitcoinpasada/faraday/releases/tag/aqrv-test-1),
-with `SHA256SUMS`. It is a test release: use it with test data only.
+A Rust library, a command line and a desktop test app are in [`rust/`](rust),
+and the fuzz targets of the library in [`fuzz/`](fuzz). They are by the same
+authors as the specification, so they are not the outside implementation the
+specification asks for. They are for testing with test data only.
+
+| Crate | What it is |
+|---|---|
+| [`rust/aqrv`](rust/aqrv) | the library: the format and nothing else (seal and open) |
+| [`rust/aqrv-cli`](rust/aqrv-cli) | the command line, `aqrv` |
+| [`rust/aqrv-app`](rust/aqrv-app) | the app's screens, drawn with Faraday's UI crates, and its own strings table (`src/strings.rs`) |
+| [`rust/aqrv-desktop`](rust/aqrv-desktop) | the desktop program, `argon-qr-vault`, in a window |
+
+### Faraday, and one commit of it
+
+The crates use Faraday's own crates (`faraday-crypto`, `faraday-bip`,
+`faraday-text`, `faraday-codec`, `faraday-files`, `faraday-ui`,
+`faraday-draw`, `faraday-shell-api`, `faraday-window`) as git dependencies on
+`https://github.com/bitcoinpasada/faraday`, all at one commit:
+
+    0849ae18dac00c54e1f1d34051c26fd6a0bcdc82
+
+It is written in `rust/Cargo.toml` (`[workspace.dependencies]`) and, for the
+fuzz workspace, in `fuzz/Cargo.toml` (`faraday-crypto`). To move to another
+commit, change `rev` in those two files, run `cargo update` in `rust/` and in
+`fuzz/` (this changes each `Cargo.lock`), then build and test as below.
+
+The cost of this: the app follows Faraday's internal crates by a pinned
+commit, with no promise that their interfaces stay the same. A new commit may
+need changes here, and an old one is what stays buildable. Faraday does not
+publish these crates to crates.io.
+
+### Building and testing
+
+`rust-toolchain.toml` names Faraday's own toolchain (Rust 1.97.0); cargo
+installs it. The lock files are committed; use `--locked`.
+
+    cd rust
+    cargo build --locked
+    cargo test --locked
+    cargo clippy --locked --all-targets -- -D warnings
+    cargo fmt --check
+
+The fuzz workspace is its own (`fuzz/`, with the dated nightly in
+`fuzz/rust-toolchain.toml`, `cargo install cargo-fuzz --locked`):
+
+    cd fuzz
+    cargo fuzz build
+    cargo fuzz run aqrv_recognise     # also aqrv_text, aqrv_item, aqrv_envelope, aqrv_open
+
+`fuzz/dict/aqrv_recognise.dict` is the dictionary of `aqrv_recognise`
+(`-dict=dict/aqrv_recognise.dict`); `fuzz/corpus/aqrv_*/` are the seeds, made
+from the vectors.
+
+The tests read this repository's own `vectors/aqrv.json`. `vectors/diff.py`
+runs the library and `check.py`'s second reader over many generated codes
+(`python3 -I -B vectors/diff.py --seed 1 --rounds 3`).
+
+### The four programs
+
+| Program | Package and binary | Output name |
+|---|---|---|
+| Argon QR Vault for Linux | `aqrv-desktop`, `argon-qr-vault` | `argon-qr-vault` |
+| Argon QR Vault for Windows | `aqrv-desktop`, `argon-qr-vault`, target `x86_64-pc-windows-gnu` | `argon-qr-vault.exe` |
+| Argon QR Vault command line for Linux | `aqrv-cli`, `aqrv` | `aqrv` |
+| Argon QR Vault command line for Windows | `aqrv-cli`, `aqrv`, target `x86_64-pc-windows-gnu` | `aqrv.exe` |
+
+Each is `cargo build --release --locked -p PACKAGE --bin BINARY` (add
+`--target x86_64-pc-windows-gnu` for Windows, with mingw-w64 installed). The
+release downloads were built in Faraday's build containers (Debian 11, so
+that the Linux binary needs glibc 2.31 or older; mingw-w64 for Windows), with
+paths remapped and symbols stripped; this repository does not hold those
+containers, so a plain build here is a test build, not the same file.
+
+### The release "Argon QR Vault test 1"
+
+Its downloads, for Linux and Windows on x86-64, are on the
+[aqrv-test-1 release](https://github.com/bitcoinpasada/faraday/releases/tag/aqrv-test-1)
+of Faraday's repository and at
+[faradayoffline.app/aqrv](https://faradayoffline.app/aqrv/#try), with
+`SHA256SUMS`. It is a test release: use it with test data only.
+
+It cannot be rebuilt from this repository. Its tag `aqrv-test-1` is in
+Faraday's repository (commit `d97d7ab14`), and its four programs, with
+`SHA256SUMS`, were built there in Faraday's containers from the sources of
+that commit. This repository carries a later state of the code, against
+a later Faraday commit, and has not got those containers, so its binaries
+differ from the release's and the checksums do not match. To rebuild the
+release itself, check out that tag in Faraday's repository and follow
+`docs/DEVELOPING.md` there ("Reproducing a release").
 
 ## Checking the vectors
 

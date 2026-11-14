@@ -1,0 +1,57 @@
+[workspace]
+resolver = "2"
+members = ["aqrv", "aqrv-cli", "aqrv-app", "aqrv-desktop"]
+
+[workspace.package]
+edition = "2024"
+license = "MIT"
+rust-version = "1.97"
+repository = "https://github.com/bitcoinpasada/aqrv"
+
+[workspace.dependencies]
+# Every Faraday crate at one commit of Faraday's repository: the README says
+# how to change it. Each crate's own dependencies and its `third_party/rqrr`
+# path come with it.
+faraday-crypto = { git = "https://github.com/bitcoinpasada/faraday", rev = "0849ae18dac00c54e1f1d34051c26fd6a0bcdc82" }
+faraday-bip = { git = "https://github.com/bitcoinpasada/faraday", rev = "0849ae18dac00c54e1f1d34051c26fd6a0bcdc82" }
+faraday-text = { git = "https://github.com/bitcoinpasada/faraday", rev = "0849ae18dac00c54e1f1d34051c26fd6a0bcdc82" }
+faraday-codec = { git = "https://github.com/bitcoinpasada/faraday", rev = "0849ae18dac00c54e1f1d34051c26fd6a0bcdc82" }
+faraday-files = { git = "https://github.com/bitcoinpasada/faraday", rev = "0849ae18dac00c54e1f1d34051c26fd6a0bcdc82" }
+faraday-ui = { git = "https://github.com/bitcoinpasada/faraday", rev = "0849ae18dac00c54e1f1d34051c26fd6a0bcdc82" }
+faraday-draw = { git = "https://github.com/bitcoinpasada/faraday", rev = "0849ae18dac00c54e1f1d34051c26fd6a0bcdc82" }
+faraday-shell-api = { git = "https://github.com/bitcoinpasada/faraday", rev = "0849ae18dac00c54e1f1d34051c26fd6a0bcdc82" }
+faraday-window = { git = "https://github.com/bitcoinpasada/faraday", rev = "0849ae18dac00c54e1f1d34051c26fd6a0bcdc82", default-features = false }
+# From Faraday's workspace table, at the versions it holds.
+zeroize = { version = "1.8", default-features = false, features = ["derive"] }
+subtle = { version = "2.6", default-features = false }
+argon2 = { version = "0.6", default-features = false, features = ["zeroize"] }
+chacha20 = { version = "0.10", default-features = false, features = ["cipher", "zeroize"] }
+unicode-normalization = { version = "0.1", default-features = false }
+png = "0.18"
+winit = { version = "0.30", default-features = false, features = [
+    "rwh_06",
+    "x11",
+    "wayland",
+    "wayland-dlopen",
+    "wayland-csd-adwaita-notitle",
+] }
+getrandom = "0.4"
+serde_json = { version = "1.0", default-features = false, features = ["alloc", "float_roundtrip"] }
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"
+
+[workspace.lints.clippy]
+too_many_lines = "warn"
+
+# Dependencies are optimized even in dev builds so that the Argon2id tests
+# run in seconds.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+opt-level = 2
+
+[profile.dev.package.aqrv]
+opt-level = 2

@@ -1,0 +1,25 @@
+[package]
+name = "aqrv-app"
+version = "0.2.0"
+description = "The Argon QR Vault's screens (AQRV specification, https://github.com/bitcoinpasada/aqrv)"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+aqrv = { path = "../aqrv" }
+faraday-bip = { workspace = true }
+faraday-ui = { workspace = true }
+faraday-draw = { workspace = true }
+faraday-shell-api = { workspace = true }
+faraday-text = { workspace = true }
+faraday-codec = { workspace = true }
+faraday-crypto = { workspace = true }
+faraday-files = { workspace = true }
+png.workspace = true
+zeroize.workspace = true
+
+[lints]
+workspace = true
