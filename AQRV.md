@@ -2,7 +2,7 @@
 
 **Kind:** Spec
 **Status:** Draft for outside review. Own specification, not yet reviewed outside Faraday; its code here is the test vectors' two scripts; its Rust reference implementation, by Faraday's authors, is in [`rust/`](rust) in this repository (library, command line, desktop test app), and nothing is compiled into any app ([`docs/STANDARDS.md`](https://github.com/bitcoinpasada/faraday/blob/main/docs/STANDARDS.md) §0)
-**Open:** a KEF envelope from Krux's own tests among the vectors (§11), an outside second implementation, an outside cryptographic review of the construction and its 4-byte and 8-byte tags (§13), public comment, and whether Faraday ever offers it
+**Open:** a KEF envelope from Krux's own tests among the vectors (§11), an outside second implementation, an outside cryptographic review of the construction and its 4-byte and 8-byte tags (§13), public comment, and whether Faraday ever offers it; the words form (§3.2) is in the vectors and not yet in the Rust reference implementation, and its check code and correction rule are unreviewed (§13)
 
 The Argon QR Vault (AQRV) is a proposed open format for one small secret
 encrypted under a passphrase with Argon2id, small enough for a 29 × 29 QR
@@ -46,8 +46,14 @@ It has three sizes in one format, and the total length says which:
 - **62 bytes:** a 33 × 33 code at medium error correction, an 8-byte tag and
   37 bytes of item.
 
+A fourth size is for words, not QR codes: an envelope can also be written as
+words, to copy by hand and type back in (§3.2):
+
+- **37 bytes:** the 32-byte size's items with a 16-byte salt, written as 36
+  words. The small and large sizes are written as 48 and 56 words.
+
 The 53-byte size is called the small size below and the 62-byte size the
-large size; the 32-byte size is always called that.
+large size; the 32-byte and 37-byte sizes are always called that.
 
 The item is one of a fixed list (§3): a BIP-39 seed's entropy, a codex32
 string, a BIP-39 passphrase, a short note or a raw 32-byte key. Everything
@@ -108,7 +114,9 @@ Published definitions used, none changed:
 
 ## 3. The envelope
 
-An envelope is exactly 32, 53 or 62 bytes, and that length is its size:
+An envelope is exactly 32, 53 or 62 bytes, and that length is its size. The
+37-byte size of the words form is §3.2; everything this section says of the
+32-byte size holds of it except what §3.2 names.
 
 | Field | Contents | 32 bytes: offset, length | 53 bytes: offset, length | 62 bytes: offset, length |
 |---|---|---|---|---|
@@ -323,6 +331,181 @@ test vectors: every valid string of up to 256 bits in them, each in the case
 it is given in, came back exactly. That is a check of the layout's arithmetic, not an
 implementation (§11).
 
+### 3.2 Words
+
+An envelope can also be written as words, for a person to copy by hand and
+type back into any reader, or to scan. The words are the envelope's bytes in
+another form, as the QR code and the 47-character text are; §4 to §8 do not
+change, and a reader opens a sheet of words with the same passphrase as the
+QR code of the same envelope.
+
+**The 37-byte size.** The 32-byte size's 11-byte salt exists only because a
+25 × 25 code holds no more (§3). Words have no such limit, so its items, a
+12-word seed or a passphrase or note of up to 15 bytes, are written as words at
+a size of their own: 37 bytes, 1 + 16 + 16 + 4, with RFC 9106's recommended
+16-byte salt.
+
+| Field | 37 bytes: offset, length |
+|---|---|
+| header `H` | 0, 1 |
+| `salt` | 1, 16 |
+| `C` | 17, 16 |
+| `T` | 33, 4 |
+
+Its room is 16, its tag 4 bytes and its kinds 0x10, 0x40 and 0x41, as at the
+32-byte size; its `N` is 37. Everything this document says of the 32-byte
+size holds of it except its salt, its `N` and §3's QR code and text form: the
+37-byte size exists only as words and in a `.aqrv` file (§9.1), and no QR code
+holds it.
+
+The 32-byte size has no words form, since its salt is 11 bytes. A 12-word seed
+sealed at the 32-byte size is copied to words by sealing it again at 37 bytes,
+which draws a new salt and makes a new envelope. The small and large sizes are
+written as words as they are, so a QR code and a sheet of words of one
+53- or 62-byte envelope are the same bytes.
+
+| Size | Bits written | Data words | Check words | Words | Unused bits in the last data word |
+|---|---|---|---|---|---|
+| 37 bytes | 291 | 30 | 6 | 36 | 9 |
+| 53 bytes | 419 | 42 | 6 | 48 | 1 |
+| 62 bytes | 491 | 50 | 6 | 56 | 9 |
+
+None of 36, 48 and 56 is a length BIP-39 uses (12 to 24 words) or SLIP-0039
+uses (20 or 33 words), so a wallet of either kind does not take a sheet of
+AQRV words as its own, and the check below fails in theirs.
+
+**The word list.** The list is SLIP-0039's, 1024 English words, and a word's
+value is its line in the list counted from 0 (`academic` is 0, `zero` is
+1023). The file is SHA-256
+`bcc4555340332d169718aed8bf31dd9d5248cb7da6e5d355140ef4f1e601eec3`, the
+`wordlist.txt` of SLIP-0039 and of Trezor's `python-shamir-mnemonic`, byte for
+byte. SLIP-0039 made it for writing by hand and states its rules: every word
+has 4 to 8 letters, the first four letters of each are unique, and any two
+words are at least two edits apart, a swap of two neighbouring letters counting
+as one edit. Checked here on the file: all three hold, and no word begins
+another.
+
+Other lists were measured the same way and left out. BIP-39's English list
+has 812 pairs of words one edit apart (`age`, `cage`, `page`, `wage`), and a
+sheet of its words reads as a seed. EFF's short list 2 keeps its words further
+apart than SLIP-0039's, but none of EFF's lists (1296 and 7776 words) has a
+power of two of words, which a Reed–Solomon code whose symbols are words
+needs.
+
+**Data words.** The envelope's first five bits are the marker 0b11111 (§4)
+and are not written. The bits after them, the step's three and then the
+envelope's other bytes, most significant bit first, are cut into 10-bit values
+from the start. The last value's unused low bits are 0. These values are the
+data words.
+
+**Check words.** Six check words follow the data words. They are a
+Reed–Solomon code over GF(1024), the field and the conventions of SLIP-0039's
+checksum (its RS1024), with six check symbols in place of its three:
+
+- GF(1024) is the polynomials over GF(2) modulo x^10 + x^3 + 1, a word's
+  value read as one with its high bit the coefficient of x^9; `a` is x, the
+  value 2.
+- The generator is g(x) = (x − a)(x − a^2)(x − a^3)(x − a^4)(x − a^5)(x −
+  a^6) = x^6 + 0x07E x^5 + 0x083 x^4 + 0x34F x^3 + 0x110 x^2 + 0x09E x +
+  0x082.
+- `cs`, the customization string, is the 22 ASCII bytes `argon-qr-vault-1
+  words`, each byte one symbol.
+
+```text
+polymod(v) = the remainder, mod g(x), of the polynomial whose coefficients,
+             highest power first, are 1 and then the values of v; its six
+             coefficients, highest first, as one 60-bit number
+check      = polymod(cs || data || six values 0) ⊕ 1, as six 10-bit
+             values, the highest first (the ⊕ 1 changes the low bit of
+             the last check word)
+valid      ⇔ polymod(cs || data || check) = 1
+```
+
+With three check symbols in place of six, `check` is SLIP-0039's
+`rs1024_create_checksum` exactly; that was checked against its published
+constants on 3000 random inputs. The leading 1 and the final ⊕ 1 are
+SLIP-0039's and BIP-173's, and keep a run of leading zero words from passing
+unseen. The customization string keeps one format's words from passing
+another's check. A later marker (§4) takes a new string.
+
+The check takes no key and is computed from the envelope, which a sheet
+shows in full, so it tells a guesser nothing that the sheet does not. It
+lets a reader find a miscopied word before it asks for the passphrase, which
+the tag cannot: under the tag alone, a miscopied word would look like a wrong
+passphrase (§6).
+
+**Writing.** A writer refuses a 32-byte envelope (above). It writes the data words and then the check words, each
+as its word in the list. It numbers them from 1 and sets them four to a row;
+the layout is not part of the format. The first four letters of a word are
+enough to name it, and a writer may say so.
+
+**Reading.**
+
+1. A reader takes a list of positions, each holding a word or marked
+   unreadable. A word is named by its first four letters, ASCII `a` to `z`,
+   each compared without regard to case (`AcAd` names `academic`); any other
+   character makes the position unreadable. A word given with more
+   letters is that list word only if every letter given matches it and it
+   has no more letters than the word. A position with fewer than four
+   letters, or whose letters name no word in the list or match none in full,
+   is unreadable; so is one a person or a scanner marks as
+   unreadable. How a reader collects the words (typing with completion after
+   four letters, or a scan) is the reader's.
+2. A list of other than 36, 48 or 56 positions is not AQRV words. A reader
+   says how many it has and how many each size needs; it does not add or drop
+   a word itself.
+3. If no position is unreadable and the words are valid, go to 5.
+4. Otherwise the reader may correct: it fills the f unreadable positions and
+   finds and changes e wrong words by Reed–Solomon decoding, and accepts a
+   result only if 2e + f ≤ 4. A correction changes only written words, never
+   the leading 1 or `cs`, and uses only the check: the unused bits are not
+   taken as known. It shows every position it filled or changed
+   and the word it put there, for the person to compare with the sheet, before
+   it asks for the passphrase. Anything else means the words do not check,
+   which a reader says in words distinct from "does not open", and it asks
+   for no passphrase.
+5. The data words' bits, after the marker 0b11111 put back in front, make the
+   envelope, its size given by the number of words. Unused bits other than 0,
+   or a step that §4 does not define, mean the words are not AQRV words: no
+   conforming writer makes them. If 4 filled or changed any position, either
+   means the words do not check, since the correction is then more likely
+   wrong than the sheet. Otherwise §6's reading follows, with the
+   size's `N`.
+
+**Why 2e + f ≤ 4.** Six check words can fix three wrong words or six
+unreadable ones, but a fix that uses every check word has none left to check
+it with: six unreadable words and one miscopied word that no one noticed
+always decode, to a wrong envelope. The rule keeps two check symbols unused.
+With the sheet's words taken as random, the chance that a sheet with more
+errors than a reader fixes still decodes to some envelope is the number of
+envelopes within reach divided by 1024 to the power of the check symbols left:
+
+| Unreadable (f) | Wrong words fixed (e) | Chance, 48 words | About 1 in |
+|---|---|---|---|
+| 0 | 0 | 2^-60 | 10^18 |
+| 1 | 0 | 2^-50 | 10^15 |
+| 0 | 1 | 2^-44 | 2 × 10^13 |
+| 2 | 0 | 2^-40 | 10^12 |
+| 1 | 1 | 2^-34 | 2 × 10^10 |
+| 0 | 2 | 2^-30 | 10^9 |
+| 3 | 0 | 2^-30 | 10^9 |
+| 2 | 1 | 2^-24 | 1.7 × 10^7 |
+| 4 | 0 | 2^-20 | 10^6 |
+
+At 36 and 56 words each figure is within one power of two of these. A wrong
+envelope reached this way still has to pass the tag, so it is "does not open"
+but for §8's chance. SLIP-0039 advises a reader not to correct, since a
+corrected share can be valid and wrong. Here the tag stands behind a
+correction, and the reader still shows every word it changed.
+
+**Against the QR code's correction.** The QR codes of §3 correct 4 of 44
+codewords at 25 × 25, 7 of 70 at 29 × 29 and 9 of each block of 50 at 33 ×
+33: about 9, 10 and 18 percent of the code, with no one checking what they
+fixed. The words correct 2 wrong words of 48, about 4 percent, or fill 4
+unreadable ones, about 8 percent. Less is needed: a reader points at a word
+and a person reads it again, and a stain on a sheet takes whole words that
+can be seen to be gone, which are the cheaper unreadable kind.
+
 ## 4. The header
 
 ```text
@@ -330,8 +513,8 @@ bit     7 6 5 4 3   2 1 0
         1 1 1 1 1   s s s     marker 0b11111, step sss
 ```
 
-The marker is this version of the format, with this list of kinds and these
-three sizes. A reader refuses a step it does not define. A later version takes
+The marker is this version of the format, with this list of kinds, these
+four sizes and the words form of §3.2. A reader refuses a step it does not define. A later version takes
 marker 0b11110 or another total length; it does not reuse this one. A reader
 older than a kind would only find no tag that matches, and say "does not
 open", which is not something a person could understand or act on. So a new
@@ -391,9 +574,9 @@ The times on small devices are not measured here.
 
 ## 6. Keys, encryption and the tag
 
-With `N` the envelope's total length as one byte (32, 53 or 62), `r` the room
-(16, 32 or 37), `t` the tag's length (4, 4 or 8) and the salt 11, 16 or 16
-bytes:
+With `N` the envelope's total length as one byte (32, 37, 53 or 62), `r` the
+room (16, 16, 32 or 37), `t` the tag's length (4, 4, 4 or 8) and the salt 11,
+16, 16 or 16 bytes:
 
 ```text
 pw      = UTF-8 bytes of the NFC form of the passphrase           (§10)
@@ -405,7 +588,8 @@ T(kind) = HMAC-SHA-256(K_mac, H || N || salt || kind || C)[:t]
 ```
 
 The HMAC's message is always 30 bytes at the 32-byte size (1 + 1 + 11 + 1 +
-16), 51 at the small size and 56 at the large one (1 + 1 + 16 + 1 + `r`), so
+16), 35 at the 37-byte size, 51 at the small size and 56 at the large one (1 +
+1 + 16 + 1 + `r`), so
 its fields are not ambiguous. Because the tags are cuts of one function under
 one key, a 4-byte tag would be the start of an 8-byte tag over the same
 message, and two 4-byte tags over the same message would be equal. `N` makes
@@ -537,7 +721,8 @@ each kind's tag with chance 2^-32 or 2^-64, so a list of n kinds has n of them:
 | **9 (this list)** | **2^-28.8** | **477 million** | **2^-60.8** | **2.0 × 10^18** |
 
 At the 32-byte size the reader tests three kinds (§3) under a 4-byte tag: 2^-30.4,
-about 1 in 1.4 billion.
+about 1 in 1.4 billion. The 37-byte size (§3.2) is the same, and every figure
+below for the 32-byte size holds for it.
 
 A false match also has to pass §6's format check to reach a person. Five
 entropy kinds and the raw key pass always. With random bytes, the codex32 kind
@@ -573,7 +758,8 @@ Any other payload of 47 characters is not recognised: one with a character
 outside QR's alphanumeric table (a lower-case letter among them), one whose
 value is 256^32 or more, and one whose first byte is outside 0xF8 to 0xFC. A
 payload of 32 bytes of binary is not recognised either, whatever its first
-byte. A file is §9.1.
+byte, and nor is a payload of 37 bytes: that size is never a QR code. A file
+is §9.1, and words are §3.2.
 
 A false match only asks for a passphrase and fails at the tag; only the
 tag proves a match. There is no room for a longer marker at 25 × 25 or 29 ×
@@ -657,13 +843,13 @@ then asks for a passphrase and fails at the tag.
 
 ### 9.1 A .aqrv file
 
-A `.aqrv` file holds exactly the envelope's bytes, 32, 53 or 62, with nothing
+A `.aqrv` file holds exactly the envelope's bytes, 32, 37, 53 or 62, with nothing
 before or after: no text form, not even the 32-byte size's 47 characters, no
-newline and no header of its own. The text
+newline and no header of its own, and not the words of §3.2. The text
 form is §15's printed sheet, which is not a file of this kind.
 
-A reader takes a file as AQRV only if its length is exactly 32, 53 or 62 bytes and
-§9's recognition passes on its bytes. Otherwise it says the file is not an
+A reader takes a file as AQRV only if its length is exactly 32, 37, 53 or 62
+bytes and its first byte is 0xF8 to 0xFC. Otherwise it says the file is not an
 AQRV code and asks for no passphrase.
 
 A writer names the file with the `.aqrv` extension. The suggested media type is
@@ -737,6 +923,21 @@ and large sizes unless an item fits only one:
   envelope of 32 bytes with an 8-character id, which is not recognised; and
   items a writer refuses at this size (24 words, a 16-byte note, a codex32
   string);
+- the words form (§3.2, `words`): the words of every 53- and 62-byte case
+  that opens, and 37-byte cases (a 12-word seed at steps 0 and 4,
+  the all-zero and all-one seeds, a passphrase and a note of the shortest and
+  longest length and not ASCII, the NFC and NFD passphrase, a wrong
+  passphrase, and right tags for kinds the size does not hold); words that a
+  reader corrects at each pair of wrong and unreadable words the rule
+  allows, each with the positions and words it changes; words that do not
+  check (one unreadable and two wrong, five unreadable, three wrong words, seven
+  unreadable, and the step 5 and unused-bit lists below with one other word
+  changed, which a correction restores to them, each marked with whether it
+  would decode without the rule); words
+  that are not AQRV words (35, 37 and 49 words, unused bits other than 0, a
+  reserved step); and words named by their first four letters, in upper
+  case and in full, and by letters that match no word, and a word with U+212A
+  KELVIN SIGN in place of its k, which is unreadable;
 - the 32-byte size's text form (`qr_text`): one vector's 47 characters, which
   decode to its envelope and open, and texts that are not recognised: the
   value 256^32, 46 and 48 characters, a lower-case letter, a character outside
@@ -752,7 +953,12 @@ and large sizes unless an item fits only one:
 alone with other libraries (PyCA cryptography's Argon2id; ChaCha20 written out from
 RFC 8439), and it agrees with every case, the sealed envelopes, the text forms and the QR
 pictures, which zbar decodes to the envelope's bytes, or at the 32-byte size to its 47
-characters (zxing-cpp is run too where it is installed). It was written by Faraday's authors,
+characters (zxing-cpp is run too where it is installed). It writes and reads the words of
+§3.2 at all three of their sizes, with its own GF(1024) arithmetic and its own
+errors-and-erasures decoder (syndromes, Berlekamp–Massey started from the erasure locator,
+Forney), checks the generator against its roots and the three-symbol form against
+SLIP-0039's `rs1024_polymod`, and agrees with every list of words; where `reedsolo` is
+installed, it decodes every list that needs correcting through that library too and requires the same result. It was written by Faraday's authors,
 so it is not the outside implementation this section and the **Open:** line ask for.
 The Rust library `aqrv`, the command line `aqrv-cli` and the desktop test app in [`rust/`](rust) are also by Faraday's authors; the library's tests read every case and the three pictures, and `aqrv vectors` runs them. They are not an outside implementation either.
 
@@ -931,7 +1137,12 @@ of all.
 10. **Recognition.** Is a 5-bit marker and the length enough? Should the
     marker bits enter Argon2id as associated data? Many libraries do not
     expose that input, and the tag covers it, which is why it does not.
-11. **Anything else** in this document that a reviewer would not sign.
+11. **Words.** Is extending SLIP-0039's RS1024 from three check symbols to
+    six, under its own conventions and a customization string of AQRV's (§3.2),
+    sound? Is 2e + f ≤ 4 the right limit on what a reader corrects, given that
+    the tag checks the result, or should a reader only point at words and
+    leave every change to the person, as SLIP-0039 advises?
+12. **Anything else** in this document that a reviewer would not sign.
 
 ## 14. Comparison with KEF and with an OpenPGP QR vault
 
@@ -999,7 +1210,10 @@ Every value comes from the envelope, and every one can be worked out again
 from a scan, so losing the text loses nothing. The text is never an input to
 the cryptography. It also offers a way back from a damaged code: typed in, it
 remakes the envelope, whose size the lengths of its values give. A mistyped
-character looks like a wrong passphrase. The name holds no word for a seed or a
+character looks like a wrong passphrase. A sheet meant to be copied or typed
+by hand should carry the envelope's words (§3.2) instead, whose check finds a
+miscopied word before the passphrase is asked for; a 32-byte envelope has
+none, and is sealed again at 37 bytes for that. The name holds no word for a seed or a
 wallet, so a sheet can use it without saying what it holds.
 
 ## 16. The path to a standard

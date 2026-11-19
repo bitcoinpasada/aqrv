@@ -7,8 +7,8 @@
 Libraries Faraday's authors did not write: argon2-cffi (Argon2id), Python's
 hmac and hashlib (HMAC-SHA-256, HKDF-Expand, SHA-256, SHAKE-256), PyCA
 cryptography (ChaCha20, AES-GCM, and an HKDF-Expand to cross-check the
-hand-written one), and Nayuki's qrcodegen (reference/qrcodegen) for the
-QR code. Nothing here is random: every passphrase, salt, item and padding is
+hand-written one), Nayuki's qrcodegen (reference/qrcodegen) for the
+QR code, and SLIP-0039's word list (reference/python-shamir-mnemonic) for the words. Nothing here is random: every passphrase, salt, item and padding is
 fixed by the script, so a second run writes the same bytes.
 
 Every case is also read back by `read` below, a plain reading of §6 and §9, and
@@ -18,6 +18,7 @@ the script's own check, not an implementation to ship.
 import argparse
 import hashlib
 import hmac
+import itertools
 import json
 import os
 import struct
@@ -44,8 +45,8 @@ from qrcodegen import QrCode, QrSegment  # noqa: E402
 STEPS = {0: 65536, 1: 131072, 2: 262144, 3: 524288, 4: 1048576}  # KiB
 LABEL_ENC = b"argon-qr-vault-1 enc"
 LABEL_MAC = b"argon-qr-vault-1 mac"
-SIZES = {32: (16, 4), 53: (32, 4), 62: (37, 8)}  # N -> (room r, tag length t)
-SALT_LEN = {32: 11, 53: 16, 62: 16}  # N -> salt bytes
+SIZES = {32: (16, 4), 37: (16, 4), 53: (32, 4), 62: (37, 8)}  # N -> (room r, tag length t)
+SALT_LEN = {32: 11, 37: 16, 53: 16, 62: 16}  # N -> salt bytes
 
 KINDS = [  # kind, name, item bytes or None
     (0x10, "BIP-39 entropy, 12 words", 16),
@@ -60,7 +61,7 @@ KINDS = [  # kind, name, item bytes or None
 ]
 KIND_NAME = {k: n for k, n, _ in KINDS}
 ALL_KINDS = [k for k, _, _ in KINDS]
-KINDS_AT = {32: [0x10, 0x40, 0x41], 53: ALL_KINDS, 62: ALL_KINDS}  # the kinds a size tests
+KINDS_AT = {32: [0x10, 0x40, 0x41], 37: [0x10, 0x40, 0x41], 53: ALL_KINDS, 62: ALL_KINDS}  # the kinds a size tests
 ENTROPY_LEN = {k: b for k, _, b in KINDS if k in (0x10, 0x14, 0x18, 0x1C, 0x20)}
 
 CHARSET = "qpzry9x8gf2tvdw0s3jn54khce6mua7l"
@@ -216,6 +217,289 @@ def read(env, passphrase):
     if item is None:
         return {"outcome": "does_not_open", "why": "format", "kind": hits[0], "detail": why}
     return {"outcome": "opens", "kind": hits[0], "item": item}
+
+
+# ------------------------------------------------------------- the words form (§3.2)
+
+WORDLIST_PATH = os.path.join(ROOT, "reference", "python-shamir-mnemonic", "wordlist.txt")
+WORDLIST_SHA256 = "bcc4555340332d169718aed8bf31dd9d5248cb7da6e5d355140ef4f1e601eec3"
+WORDS_CS = b"argon-qr-vault-1 words"
+WORDS_CHECK = 6
+WORDS_BOUND = 4  # a correction is accepted only if 2e + f <= 4
+GF_POLY = 0x409  # x^10 + x^3 + 1
+WORDS_GENERATOR = [1, 0x7E, 0x83, 0x34F, 0x110, 0x9E, 0x82]
+WORDS_TABLE = {37: (291, 30, 9), 53: (419, 42, 1), 62: (491, 50, 9)}  # N -> bits, data words, unused bits
+
+
+def _wordlist():
+    data = open(WORDLIST_PATH, "rb").read()
+    assert hashlib.sha256(data).hexdigest() == WORDLIST_SHA256, "the SLIP-0039 word list differs"
+    words = data.decode("ascii").split("\n")
+    assert words[-1] == "" and len(words) == 1025
+    words = words[:-1]
+    assert all(w.isalpha() and w.islower() and 4 <= len(w) <= 8 for w in words)
+    assert len({w[:4] for w in words}) == 1024 and len(set(words)) == 1024
+    assert not any(a != b and b.startswith(a) for a in words for b in words if a[:4] == b[:4])
+    letters = "abcdefghijklmnopqrstuvwxyz"
+    have = set(words)
+    for w in words:  # SLIP-0039: no two words one edit apart, a swap of neighbours counting as one
+        near = set()
+        for i in range(len(w) + 1):
+            for ch in letters:
+                near.add(w[:i] + ch + w[i:])
+        for i in range(len(w)):
+            near.add(w[:i] + w[i + 1:])
+            for ch in letters:
+                near.add(w[:i] + ch + w[i + 1:])
+        for i in range(len(w) - 1):
+            near.add(w[:i] + w[i + 1] + w[i] + w[i + 2:])
+        near.discard(w)
+        assert not (near & have), (w, near & have)
+    return words
+
+
+WORDS = _wordlist()
+WORD_BY_PREFIX = {w[:4]: i for i, w in enumerate(WORDS)}
+
+GF_EXP = [0] * 2046
+GF_LOG = [0] * 1024
+_x = 1
+for _i in range(1023):
+    GF_EXP[_i] = _x
+    assert _i == 0 or _x != 1, "2 is not primitive"
+    GF_LOG[_x] = _i
+    _x <<= 1
+    if _x & 0x400:
+        _x ^= GF_POLY
+assert _x == 1 and len(set(GF_EXP[:1023])) == 1023
+for _i in range(1023, 2046):
+    GF_EXP[_i] = GF_EXP[_i - 1023]
+
+
+def gmul(a, b):
+    return 0 if a == 0 or b == 0 else GF_EXP[GF_LOG[a] + GF_LOG[b]]
+
+
+def ginv(a):
+    assert a
+    return GF_EXP[1023 - GF_LOG[a]]
+
+
+def _gmul_slow(a, b):  # the field's own definition, to check the tables
+    r = 0
+    while b:
+        if b & 1:
+            r ^= a
+        b >>= 1
+        a <<= 1
+        if a & 0x400:
+            a ^= GF_POLY
+    return r
+
+
+def gen_poly(r):
+    g = [1]
+    for i in range(1, r + 1):
+        root = GF_EXP[i]
+        ng = g + [0]
+        for j in range(len(g)):
+            ng[j + 1] ^= gmul(g[j], root)
+        g = ng
+    return g
+
+
+_GEN = {r: gen_poly(r) for r in (3, 6)}
+
+
+def polymod_r(values, r):
+    """The remainder mod g(x) of 1 followed by values, as r symbols, highest first."""
+    g = _GEN[r]
+    reg = [0] * (r - 1) + [1]
+    for v in values:
+        top = reg[0]
+        reg = reg[1:] + [v]
+        if top:
+            for j in range(r):
+                reg[j] ^= gmul(top, g[j + 1])
+    return reg
+
+
+def rs1024_polymod(values):  # SLIP-0039 rs1024_polymod, copied
+    GEN = (0xE0E040, 0x1C1C080, 0x3838100, 0x7070200, 0xE0E0009, 0x1C0C2412, 0x38086C24, 0x3090FC48, 0x21B1F890, 0x3F3F120)
+    chk = 1
+    for v in values:
+        b = chk >> 20
+        chk = (chk & 0xFFFFF) << 10 ^ v
+        for i in range(10):
+            chk ^= GEN[i] if ((b >> i) & 1) else 0
+    return chk
+
+
+def _words_selftest():
+    for a in range(0, 1024, 7):
+        for b in range(0, 1024, 11):
+            assert gmul(a, b) == _gmul_slow(a, b)
+    assert _GEN[6] == WORDS_GENERATOR, [hex(c) for c in _GEN[6]]
+    for i in range(400):
+        stream = shake("words polymod %d" % i, 120)
+        m = 1 + stream[0] % 56
+        data = [((stream[1 + 2 * k] << 8) | stream[2 + 2 * k]) & 1023 for k in range(m)]
+        for cs in (b"shamir", WORDS_CS):
+            reg = polymod_r(list(cs) + data, 3)
+            assert ((reg[0] << 20) | (reg[1] << 10) | reg[2]) == rs1024_polymod(list(cs) + data)
+            p = rs1024_polymod(list(cs) + data + [0, 0, 0]) ^ 1
+            slip = [(p >> 10 * k) & 1023 for k in reversed(range(3))]
+            assert words_check(data, 3, cs) == slip
+            assert polymod_r(list(cs) + data + words_check(data, 6, cs), 6) == [0] * 5 + [1]
+    for n, (bits, m, unused) in WORDS_TABLE.items():
+        assert bits == 8 * n - 5 and m == (bits + 9) // 10 and unused == 10 * m - bits
+        assert m + WORDS_CHECK == {37: 36, 53: 48, 62: 56}[n]
+
+
+def words_check(data, r=WORDS_CHECK, cs=WORDS_CS):
+    reg = polymod_r(list(cs) + list(data) + [0] * r, r)
+    reg[-1] ^= 1
+    return reg
+
+
+def words_valid(values):
+    return polymod_r(list(WORDS_CS) + list(values), WORDS_CHECK) == [0] * (WORDS_CHECK - 1) + [1]
+
+
+def data_words(env):
+    n = len(env)
+    bits, m, unused = WORDS_TABLE[n]
+    v = int.from_bytes(env, "big")
+    assert v >> bits == 0b11111
+    v = (v & ((1 << bits) - 1)) << unused
+    return [(v >> (10 * (m - 1 - k))) & 1023 for k in range(m)]
+
+
+def word_values(env):
+    data = data_words(env)
+    return data + words_check(data)
+
+
+def words_of(env):
+    """§3.2 writing: the envelope's words, data words then check words."""
+    return [WORDS[v] for v in word_values(env)]
+
+
+def name_word(s):
+    """§3.2 reading, step 1: a word's value, or None when the position is unreadable."""
+    if len(s) < 4 or any(ch not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ" for ch in s):
+        return None  # ASCII letters only: "?", a digit, U+212A KELVIN SIGN and the like make it unreadable
+    low = s.lower()
+    i = WORD_BY_PREFIX.get(low[:4])
+    if i is None:
+        return None
+    w = WORDS[i]
+    if len(low) > len(w) or not w.startswith(low):
+        return None
+    return i
+
+
+_COLS = {}
+
+
+def _columns(m):
+    """col_k: what a value of 1 at position k adds to the remainder (the remainder is affine in the values)."""
+    if m not in _COLS:
+        zero = polymod_r(list(WORDS_CS) + [0] * m, WORDS_CHECK)
+        cols = []
+        for k in range(m):
+            unit = [0] * m
+            unit[k] = 1
+            cols.append([a ^ b for a, b in zip(polymod_r(list(WORDS_CS) + unit, WORDS_CHECK), zero)])
+        _COLS[m] = cols
+    return _COLS[m]
+
+
+def _solve(cols, target):
+    """Solves sum x_j cols[j] = target over GF(1024); the x, or None if no solution."""
+    u = len(cols)
+    rows = [[cols[j][i] for j in range(u)] + [target[i]] for i in range(len(target))]
+    piv_row = 0
+    for j in range(u):
+        p = next((i for i in range(piv_row, len(rows)) if rows[i][j]), None)
+        assert p is not None, "the columns are not independent"
+        rows[piv_row], rows[p] = rows[p], rows[piv_row]
+        inv = ginv(rows[piv_row][j])
+        rows[piv_row] = [gmul(inv, x) for x in rows[piv_row]]
+        for i in range(len(rows)):
+            if i != piv_row and rows[i][j]:
+                f = rows[i][j]
+                rows[i] = [a ^ gmul(f, b) for a, b in zip(rows[i], rows[piv_row])]
+        piv_row += 1
+    if any(rows[i][u] for i in range(u, len(rows))):
+        return None
+    return [rows[j][u] for j in range(u)]
+
+
+def correct(values, unreadable, bound=WORDS_BOUND):
+    """§3.2 reading, step 4: fills the unreadable positions (indices from 0) and changes
+    e wrong words with 2e + f <= bound. Returns (values, wrong indices) or None."""
+    m = len(values)
+    f = len(unreadable)
+    if f > bound:
+        return None
+    cols = _columns(m)
+    got = [0 if k in unreadable else v for k, v in enumerate(values)]
+    rem = polymod_r(list(WORDS_CS) + got, WORDS_CHECK)
+    target = [a ^ b for a, b in zip(rem, [0] * (WORDS_CHECK - 1) + [1])]
+    readable = [k for k in range(m) if k not in unreadable]
+    for e in range((bound - f) // 2 + 1):
+        for wrong in itertools.combinations(readable, e):
+            pos = sorted(unreadable) + list(wrong)
+            x = _solve([cols[k] for k in pos], target)
+            if x is None or any(x[f + j] == 0 for j in range(e)):
+                continue
+            out = list(got)
+            for k, d in zip(pos, x):
+                out[k] ^= d
+            assert words_valid(out)
+            return out, sorted(wrong)
+    return None
+
+
+def envelope_of_words(values):
+    """§3.2 reading, step 5: the envelope, or None and why the words are not AQRV words."""
+    m = len(values) - WORDS_CHECK
+    n = [k for k, (_, dm, _) in WORDS_TABLE.items() if dm == m][0]
+    bits, _, unused = WORDS_TABLE[n]
+    v = 0
+    for x in values[:m]:
+        v = (v << 10) | x
+    if v & ((1 << unused) - 1):
+        return None, "the last data word's %d unused bits are not 0" % unused
+    v >>= unused
+    env = ((0b11111 << bits) | v).to_bytes(n, "big")
+    if env[0] & 7 > 4:
+        return None, "step %d is not defined" % (env[0] & 7)
+    return env, None
+
+
+def read_words(given, passphrase, bound=WORDS_BOUND):
+    """§3.2 reading, then §6's. The answer has the shape of a words case's expect."""
+    if len(given) not in (36, 48, 56):
+        return {"outcome": "not_aqrv_words", "why": "%d words" % len(given)}
+    named = [name_word(s) for s in given]
+    unreadable = [k for k, v in enumerate(named) if v is None]
+    fixed = correct(named, unreadable, bound)
+    if fixed is None:
+        return {"outcome": "words_do_not_check"}
+    values, wrong = fixed
+    env, why = envelope_of_words(values)
+    if env is None:  # after a correction, bad unused bits or a reserved step mean the correction is suspect
+        return {"outcome": "words_do_not_check" if unreadable or wrong else "not_aqrv_words", "why": why}
+    got = read(env, passphrase)
+    if got["outcome"] != "opens":
+        return {"outcome": got["outcome"]}
+    changed = sorted(unreadable + wrong)
+    return {"outcome": "opens", "unreadable": [k + 1 for k in unreadable], "wrong": [k + 1 for k in wrong],
+            "corrected": [{"position": k + 1, "input": given[k], "word": WORDS[values[k]]} for k in changed],
+            "words": [WORDS[v] for v in values], "envelope": hx(env), "kind": kh(got["kind"]),
+            "item": got["item"]}
 
 
 # ------------------------------------------------------------ case building
@@ -483,6 +767,233 @@ PASS = "aqrv vector passphrase"
 UNI = "café ✨ Ångström"
 UNI_NFD = unicodedata.normalize("NFD", UNI)
 assert UNI != UNI_NFD and nfc(UNI_NFD) == UNI
+
+
+def build_37():
+    """The 37-byte size (§3.2), which exists only as words: the 32-byte size's cases with a 16-byte salt."""
+    out = []
+    n = 37
+    r, t = SIZES[n]
+    for step in (0, 4):
+        nm = "step-%d-12w-%d" % (step, n)
+        ent = bip39(0x00, 16)  # "abandon ... about"
+        case, env = valid_case(nm, "step", n, step, PASS, 0x10, ent,
+                               expect_item={"type": "entropy", "hex": hx(ent)}, extra=words_extra(ent))
+        out.append(case)
+        if step == 0:
+            base = (env, PASS, nm)
+    for kind, label, tname in ((0x40, "passphrase", "passphrase"), (0x41, "note", "note")):
+        for how, text in (
+            ("shortest", "x"),
+            ("longest", "0123456789abcdefghijklmnopqrstuvwxyz"[:r - 1]),
+            ("non-ascii", "Zoë ✓ 日本"),
+        ):
+            b = text.encode("utf-8")
+            assert 1 <= len(b) <= r - 1
+            nm = "%s-%s-%d" % (label, how, n)
+            out.append(valid_case(nm, "kind", n, 0, PASS, kind, bytes([len(b)]) + b,
+                                  expect_item={"type": tname, "text": text}, extra={"text_bytes": len(b)})[0])
+    for label, byte in (("zero", 0x00), ("ones", 0xFF)):
+        ent = bip39(byte, 16)
+        nm = "%s-seed-12w-%d" % (label, n)
+        out.append(valid_case(nm, "seed", n, 0, PASS, 0x10, ent, expect_item={"type": "entropy", "hex": hx(ent)},
+                              extra=words_extra(ent))[0])
+    ent = bip39(0x80, 16)
+    salt = salt_of("unicode-%d" % n, n)
+    envs = []
+    for form, pp in (("nfc", UNI), ("nfd", UNI_NFD)):
+        nm = "unicode-%s-%d" % (form, n)
+        case, env = valid_case(nm, "unicode", n, 0, pp, 0x10, ent,
+                               expect_item={"type": "entropy", "hex": hx(ent)}, salt=salt,
+                               pad_name="unicode-%d" % n,
+                               extra=dict(words_extra(ent), passphrase_utf8=hx(pp.encode())))
+        out.append(case)
+        envs.append(env)
+    assert envs[0] == envs[1]
+    env, pp, src = base
+    out.append(fail_case("fail-wrong-passphrase-%d" % n, "fail", env, PASS + "!", "does_not_open",
+                         "a wrong passphrase", src))
+    for kind in (0x20, 0x30, 0x50):
+        nm = "fail-kind-%02X-not-at-%d" % (kind, n)
+        salt = salt_of(nm, n)
+        d = derive(PASS, salt, 0)
+        p = shake("padding " + nm, r)
+        c = xor(p, d["keystream"][:r])
+        envk = bytes([0xF8]) + salt + c + tag(d["k_mac"], 0xF8, n, salt, kind, c, t)
+        assert all(tag(d["k_mac"], 0xF8, n, salt, k, c, t) != envk[-t:] for k in KINDS_AT[n])
+        out.append(fail_case(nm, "fail", envk, PASS, "does_not_open",
+                             "the tag is right for kind %s (%s), which the 37-byte size does not hold, so a reader does not test it" % (kh(kind), KIND_NAME[kind]),
+                             note="made with the key: P is %s, and the tag is HMAC over H || N || salt || %s || C" % (hx(p), kh(kind))))
+    assert len(out) == 16
+    return out, base
+
+
+def _pick(label, count, m, avoid=()):
+    """count distinct positions (indices from 0) of m, drawn from shake with a retry counter."""
+    tries = 0
+    while True:
+        s = shake("words positions %s %d" % (label, tries), 2 * count)
+        pos = [((s[2 * k] << 8) | s[2 * k + 1]) % m for k in range(count)]
+        if len(set(pos)) == count and not set(pos) & set(avoid):
+            return pos
+        tries += 1
+
+
+def decodes_without_rule(given):
+    """Whether a decoder allowed 2e + f <= 6 finds valid words."""
+    named = [name_word(x) for x in given]
+    return correct(named, [k for k, v in enumerate(named) if v is None], bound=6) is not None
+
+
+def _wrong_value(label, orig):
+    s = shake("words wrong %s" % label, 2)
+    return (orig + 1 + ((s[0] << 8) | s[1]) % 1023) % 1024
+
+
+def build_words(bases):
+    """§3.2: the words cases. bases maps a size to (envelope, passphrase, case name, case expect)."""
+    out = []
+    for n in (37, 53, 62):
+        env, pp, src, exp = bases[n]
+        vals = word_values(env)
+        full = [WORDS[v] for v in vals]
+        m = len(vals)
+        k = m - WORDS_CHECK
+
+        def opens(name, group, given, unreadable, wrong, note):
+            changed = sorted(unreadable + wrong)
+            return {"name": name, "group": group, "size": n, "source": src, "passphrase": pp, "input": given,
+                    "note": note,
+                    "expect": {"outcome": "opens", "unreadable": [i + 1 for i in sorted(unreadable)],
+                               "wrong": [i + 1 for i in sorted(wrong)],
+                               "corrected": [{"position": i + 1, "input": given[i], "word": full[i]} for i in changed],
+                               "words": full, "envelope": hx(env), "kind": exp["kind"], "item": exp["item"]}}
+
+        def damaged(label, f, e, first=None):
+            if first is None:
+                pos = _pick("%s" % label, f + e, m)
+                unr, wr = pos[:f], pos[f:]
+            else:
+                unr, wr = first
+            given = list(full)
+            for i in unr:
+                given[i] = "?"
+            for i in wr:
+                given[i] = WORDS[_wrong_value("%s %d" % (label, i), vals[i])]
+            return given, unr, wr
+
+        # Corrections the rule allows.
+        for f, e in ((0, 1), (0, 2), (1, 0), (1, 1), (2, 0), (2, 1), (3, 0), (4, 0)):
+            nm = "words-correct-%du-%dw-%d" % (f, e, m)
+            given, unr, wr = damaged(nm, f, e, ([0], [m - 1]) if (f, e) == (1, 1) else None)
+            out.append(opens(nm, "words-correct", given, unr, wr,
+                             "%d unreadable and %d wrong: 2e + f = %d" % (f, e, 2 * e + f)))
+        # Must not check.
+        for f, e, why in ((1, 2, "one unreadable and two wrong words: 2e + f = 5"),
+                          (5, 0, "five unreadable words: 2e + f = 5"),
+                          (0, 3, "three wrong words: 2e + f = 6"),
+                          (7, 0, "seven unreadable words: more than the six check words")):
+            nm = "words-no-check-%du-%dw-%d" % (f, e, m)
+            given, unr, wr = damaged(nm, f, e)
+            out.append({"name": nm, "group": "words-do-not-check", "size": n, "source": src, "passphrase": pp,
+                        "input": given,
+                        "expect": {"outcome": "words_do_not_check", "reason": why,
+                                   "decodes_without_the_rule": decodes_without_rule(given)}})
+
+        # Not AQRV words: other bits with a check made over them.
+        def recheck(data):
+            return [WORDS[v] for v in data + words_check(data)]
+
+        data = vals[:k]
+        bits, _, unused = WORDS_TABLE[n]
+        if n in (37, 53):
+            d2 = list(data)
+            d2[-1] |= 1
+            d_unused = d2
+            out.append({"name": "words-unused-bit-%d" % m, "group": "words-not-aqrv", "size": n, "source": src,
+                        "passphrase": pp, "input": recheck(d2),
+                        "expect": {"outcome": "not_aqrv_words",
+                                   "reason": "the lowest of the last data word's %d unused bits is 1, with check words made over it" % unused}})
+        if n == 53:
+            d2 = list(data)
+            d2[0] = (5 << 7) | (d2[0] & 0x7F)
+            out.append({"name": "words-step-5-%d" % m, "group": "words-not-aqrv", "size": n, "source": src,
+                        "passphrase": pp, "input": recheck(d2),
+                        "expect": {"outcome": "not_aqrv_words",
+                                   "reason": "the step is 5, which is not defined, with check words made over it: the envelope would begin 0xFD"}})
+            # The same two bad lists with one other word changed: the correction restores the bad list.
+            for nm, bad, what in (("words-corrected-step-5-%d" % m, d2, "step 5"),
+                                  ("words-corrected-unused-bit-%d" % m, d_unused, "a set unused bit")):
+                g = recheck(bad)
+                i = 9
+                assert 0 < i < k - 1
+                g[i] = WORDS[_wrong_value(nm, WORDS.index(g[i]))]
+                out.append({"name": nm, "group": "words-do-not-check", "size": n, "source": src, "passphrase": pp,
+                            "input": g,
+                            "expect": {"outcome": "words_do_not_check",
+                                       "reason": "the words of %s with position %d changed: the correction restores that list, and %s after a correction means the words do not check" % (
+                                           "words-step-5-%d" % m if what == "step 5" else "words-unused-bit-%d" % m, i + 1, what),
+                                       "decodes_without_the_rule": decodes_without_rule(g)}})
+        if n == 37:
+            out.append({"name": "words-35", "group": "words-not-aqrv", "source": src, "passphrase": pp,
+                        "input": full[:-1],
+                        "expect": {"outcome": "not_aqrv_words", "reason": "35 words: 36 with the last removed"}})
+            out.append({"name": "words-37", "group": "words-not-aqrv", "source": src, "passphrase": pp,
+                        "input": full + [full[-1]],
+                        "expect": {"outcome": "not_aqrv_words", "reason": "37 words: 36 with the last repeated"}})
+        if n == 53:
+            out.append({"name": "words-49", "group": "words-not-aqrv", "source": src, "passphrase": pp,
+                        "input": full + [full[-1]],
+                        "expect": {"outcome": "not_aqrv_words", "reason": "49 words: 48 with the last repeated"}})
+
+        # Naming.
+        if n == 37:
+            out.append(opens("words-first-four-%d" % m, "words-naming", [w[:4] for w in full], [], [],
+                             "every word by its first four letters"))
+            i = next(i for i, w in enumerate(full) if len(w) >= 5)
+            g = list(full)
+            ch = g[i][4]
+            g[i] = g[i][:4] + chr((ord(ch) - 97 + 1) % 26 + 97) + g[i][5:]
+            out.append(opens("words-wrong-fifth-letter-%d" % m, "words-naming", g, [i], [],
+                             "position %d's fifth letter is wrong: it matches no word in full, so it is unreadable and filled" % (i + 1)))
+            i = next(i for i, w in enumerate(full) if "k" in w)
+            g = list(full)
+            g[i] = g[i].replace("k", "\u212a")
+            assert g[i].lower() != g[i] and g[i].lower().replace("\u212a".lower(), "k") == full[i]
+            out.append(opens("words-kelvin-sign-%d" % m, "words-naming", g, [i], [],
+                             "position %d is %s with U+212A KELVIN SIGN in place of k: not an ASCII letter, so it is unreadable and filled" % (i + 1, full[i])))
+        if n == 53:
+            g = []
+            for i, w in enumerate(full):
+                ln = 4 + i % (len(w) - 3)
+                g.append(w[:ln].upper())
+            out.append(opens("words-upper-case-%d" % m, "words-naming", g, [], [],
+                             "every word in upper case, from its first four letters to all of them"))
+            i = len(full) // 2
+            g = list(full)
+            g[i] = g[i] + "s"
+            out.append(opens("words-letter-added-%d" % m, "words-naming", g, [i], [],
+                             "position %d has a letter added: longer than the word, so it is unreadable and filled" % (i + 1)))
+        if n == 62:
+            out.append(opens("words-in-full-%d" % m, "words-naming", list(full), [], [], "every word in full"))
+            nope = next(a + b + c + d for a in "zyx" for b in "zyx" for c in "zyx" for d in "zyx"
+                        if a + b + c + d not in WORD_BY_PREFIX)
+            i = 2
+            g = list(full)
+            g[i] = nope
+            out.append(opens("words-no-such-word-%d" % m, "words-naming", g, [i], [],
+                             "position %d is %r, four letters that begin no word, so it is unreadable and filled" % (i + 1, nope)))
+    # Every case is read back by read_words and must agree.
+    for wc in out:
+        got = read_words(wc["input"], wc["passphrase"])
+        want = dict(wc["expect"])
+        if want["outcome"] != "opens":
+            assert got["outcome"] == want["outcome"], (wc["name"], got)
+            if want["outcome"] == "words_do_not_check":
+                assert read_words(wc["input"], wc["passphrase"], bound=4)["outcome"] == "words_do_not_check"
+        else:
+            assert got == want, (wc["name"], got, want)
+    return out
 
 
 def build():
@@ -926,6 +1437,21 @@ def build():
         got = read_text(tc["text"], tc.get("passphrase", "x"))
         assert got["outcome"] == tc["expect"]["outcome"], (tc["name"], got)
 
+    # The 37-byte size and the words form (§3.2). Added after every case above so that those keep their places.
+    _words_selftest()
+    c37, base[37] = build_37()
+    cases += c37
+    for c in cases:
+        if c["size"] == 37 or (c["size"] in (53, 62) and c["expect"]["outcome"] == "opens"):
+            c["words"] = words_of(bytes.fromhex(c["envelope"]))
+            got = read_words(c["words"], c["passphrase"])
+            assert got["outcome"] == c["expect"]["outcome"], (c["name"], got)
+            if got["outcome"] == "opens":
+                assert (got["unreadable"], got["wrong"], got["envelope"], got["kind"], got["item"]) == (
+                    [], [], c["envelope"], c["expect"]["kind"], c["expect"]["item"]), c["name"]
+    case_of = {c["name"]: c for c in cases}
+    words_cases = build_words({n: base[n] + (case_of[base[n][2]]["expect"],) for n in (37, 53, 62)})
+
     doc = {
         "about": "Test vectors for the Argon QR Vault (AQRV), AQRV.md section 11. See README.md. Written by gen.py.",
         "parameters": {
@@ -939,17 +1465,34 @@ def build():
                 "opens": "recognised, one kind's tag matches, the item reads: expect.kind and expect.item are what a reader shows",
                 "does_not_open": "recognised, asks for the passphrase, and reports that the code does not open",
                 "not_recognised": "not treated as AQRV: no passphrase is asked for",
+                "words_do_not_check": "words only: the words fail their check and no correction with 2e + f <= 4 makes them pass; no passphrase is asked for, and the reader says so in words distinct from does_not_open",
+                "not_aqrv_words": "words only: other than 36, 48 or 56 words, or words that check but whose unused bits are not 0 or whose step is not defined; no passphrase is asked for",
+            },
+            "words": {
+                "word_list": "reference/python-shamir-mnemonic/wordlist.txt, SLIP-0039's list, one word per line; a word's value is its line counted from 0",
+                "word_list_sha256": WORDLIST_SHA256,
+                "field": "GF(1024): polynomials over GF(2) modulo x^10 + x^3 + 1 (0x409)",
+                "a": 2,
+                "generator": ["0x%03X" % g for g in WORDS_GENERATOR],
+                "generator_note": "g(x) = (x - a)(x - a^2)...(x - a^6), coefficients highest power first",
+                "customization_string": WORDS_CS.decode(),
+                "check_words": WORDS_CHECK,
+                "check": "polymod(cs || data || six 0) XOR 1, the register starting at 1",
+                "sizes": [{"bytes": n, "bits_written": b, "data_words": m, "check_words": WORDS_CHECK,
+                           "words": m + WORDS_CHECK, "unused_bits": u} for n, (b, m, u) in WORDS_TABLE.items()],
+                "correction_rule": "2e + f <= 4, e wrong words changed and f unreadable positions filled",
             },
         },
         "cases": cases,
         "writer_refuses": writer_refuses,
         "qr": qrs,
         "qr_text": text_cases,
+        "words": words_cases,
     }
     text = json.dumps(doc, indent=1, ensure_ascii=True) + "\n"
     out = {"aqrv.json": text.encode()}
     out.update(pngs)
-    return out, len(cases)
+    return out, (len(cases), len(words_cases))
 
 
 def main():
@@ -969,7 +1512,7 @@ def main():
         else:
             with open(path, "wb") as f:
                 f.write(data)
-    print("%d cases, %d files, %.1f s%s" % (n, len(files), time.time() - t0, ", all identical" if args.check and not bad else ""))
+    print("%d cases, %d words cases, %d files, %.1f s%s" % (n[0], n[1], len(files), time.time() - t0, ", all identical" if args.check and not bad else ""))
     return 1 if bad else 0
 
 

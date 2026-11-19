@@ -28,6 +28,13 @@ Libraries the format's authors did not write:
   and level fixed, the mask chosen by the library.
 - The codex32 checksum: BIP 93's `ms32_polymod` and `ms32_create_regular_checksum`,
   copied from the BIP's text in `reference/bip93/`.
+- The words (§3.2): SLIP-0039's word list, `wordlist.txt` of Trezor's
+  `python-shamir-mnemonic`, vendored in `reference/python-shamir-mnemonic/`;
+  `gen.py` checks its SHA-256 and SLIP-0039's rules on it before it starts.
+  The six check words are computed by a generic Reed–Solomon remainder over
+  GF(1024), which `gen.py` first compares at three check symbols with
+  SLIP-0039's `rs1024_polymod`, copied from SLIP-0039, on 400 inputs and both
+  customization strings.
 
 Everything is fixed by the script: passphrases are in it, a salt is
 the first 16 bytes (11 at the 32-byte size) of SHA-256 of `AQRV vector salt ` and the case's name, and
@@ -49,9 +56,11 @@ checks the vectors and is not meant to be used.
 
 ## A case
 
-`aqrv.json` has `parameters` (the steps, labels, sizes with each one's salt length and kinds, the kinds and the three
-outcomes), `cases`, `writer_refuses` and `qr`. Every case has `name`, `group`,
-`size` (32, 53 or 62), `passphrase`, `envelope` (hex) and `expect`. A case that
+`aqrv.json` has `parameters` (the steps, labels, sizes with each one's salt length and kinds, the kinds, the five
+outcomes, and `words`: the word list and its SHA-256, the field, `a`, the generator, the customization string, the
+word counts and unused bits of each size and the correction rule), `cases`, `writer_refuses`, `qr`, `qr_text` and
+`words`. Every case has `name`, `group`,
+`size` (32, 37, 53 or 62), `passphrase`, `envelope` (hex) and `expect`. A case that
 opens also has:
 
 - `step`, `memory_kib`, `header`, `salt`, `kind` and `kind_name`;
@@ -64,7 +73,10 @@ opens also has:
   `tags` (every kind of the size, nine or three, keyed by kind) and `tag` (the one stored);
 - `expect.item`: what a reader shows. `type` is `entropy`, `raw_key`, `passphrase`,
   `note` or `codex32`, with `hex`, `text` or `string` (the exact string, in its
-  case) and, for codex32, `is_secret`.
+  case) and, for codex32, `is_secret`;
+- `words` (every 53- and 62-byte case that opens, and every 37-byte case): the
+  envelope's words (§3.2), data words then check words, in full. Read with the
+  case's passphrase, they give the case's `expect`.
 
 `expect.outcome` is one of:
 
@@ -72,6 +84,24 @@ opens also has:
 - `does_not_open`: recognised, a passphrase is asked for, and the code does not
   open. `expect.why` and `expect.reason` say how;
 - `not_recognised`: not treated as AQRV (§9), so no passphrase is asked for.
+
+and, for a list of words only:
+
+- `words_do_not_check`: the words fail their check and no correction within
+  `2e + f <= 4` passes it; no passphrase is asked for;
+- `not_aqrv_words`: other than 36, 48 or 56 words, or words that check whose
+  unused bits are not 0 or whose step is not defined; no passphrase is asked for.
+
+Each entry of the top-level `words` list has `name`, `group`, `input` (one string
+a position, `?` for a position marked unreadable), `expect`, and, where they
+apply, `size`, `source` (the case whose envelope it is made from), `passphrase`
+and `note`. An entry that opens expects `unreadable` and `wrong` (positions,
+counted from 1), `corrected` (each position filled or changed, with its
+`position`, its `input` and the `word` put there), `words` (the whole corrected
+list), `envelope`, `kind` and `item`. One that does not check expects `reason`
+and `decodes_without_the_rule`, whether a decoder allowed `2e + f <= 6` would
+find valid words (computed by such a run, not written by hand); one that is not
+AQRV words expects `reason`.
 
 ## Groups
 
@@ -84,7 +114,12 @@ opens also has:
 | `codex32` | the codex32 strings of BIP 93 vectors 1, 2, 3, 4, 6, 7 and 8 (secrets, shares, derived shares, and the alternate encodings of vectors 3 and 4), each returning the exact string in its own case. A string of 21 to 29 item bytes is sealed at 53; one of 33 or 37 only at 62; the first string of each vector that fits 53 is also sealed at 62. Vector 5 (a 64-byte seed) and an invalid checksum are in `writer_refuses` |
 | `fail` | a wrong passphrase; one bit changed in the header's step (does not open), in its marker (not recognised), in the salt, in `C` and in the tag; steps 5 to 7; marker `0b11110` (first byte `0xF0`); lengths 52, 54, 61 and 63; a 62-byte envelope cut to its first 53 bytes; a tag made with the other size's `N`, on each size |
 | `fail-right-tag` | cases whose tag is right, made with the key over a `P` the format refuses: a `len` of 0 and of the room (one past `room - 1`), for a passphrase and a note; text that is not UTF-8; a codex32 `size` of 5, 6 and 7, and of 3 and 4 at 53 bytes; a threshold field of 1; threshold `0` with the index `a`. The reader finds exactly one kind's tag matching and then refuses the item |
-| 32-byte size | the 40 cases after every other, in the groups above: a 12-word seed at each step; a passphrase and a note of 1 and 15 bytes and non-ASCII; a 15-byte multi-byte note; the all-zero and all-one 12-word seeds; NFC and NFD; the `fail` cases with lengths 31 and 33, a 53-byte envelope cut to 32, a tag with `N` = 53 on 32 bytes and with `N` = 32 on 53; a right tag for kinds 0x20, 0x30 and 0x50, which the size does not hold, so a reader does not test them; right tags over a `len` of 0 and 16 and over text that is not UTF-8; and a KEF version 5 envelope of 32 bytes with an 8-character id (`not-recognised`). `writer_refuses` adds three items the writer refuses at 32 bytes, each with `size`, `kind` and `item`. These cases give the envelope as bytes, the form of a `.aqrv` file |
+| 32-byte size | the 40 cases after every other but the 37-byte ones, in the groups above: a 12-word seed at each step; a passphrase and a note of 1 and 15 bytes and non-ASCII; a 15-byte multi-byte note; the all-zero and all-one 12-word seeds; NFC and NFD; the `fail` cases with lengths 31 and 33, a 53-byte envelope cut to 32, a tag with `N` = 53 on 32 bytes and with `N` = 32 on 53; a right tag for kinds 0x20, 0x30 and 0x50, which the size does not hold, so a reader does not test them; right tags over a `len` of 0 and 16 and over text that is not UTF-8; and a KEF version 5 envelope of 32 bytes with an 8-character id (`not-recognised`). `writer_refuses` adds three items the writer refuses at 32 bytes, each with `size`, `kind` and `item`. These cases give the envelope as bytes, the form of a `.aqrv` file |
+| 37-byte size | the 16 cases after the 32-byte ones, which exist only as words (§3.2): a 12-word seed at steps 0 and 4; a passphrase and a note of 1 and 15 bytes and non-ASCII; the all-zero and all-one 12-word seeds; NFC and NFD; a wrong passphrase; and right tags for kinds `0x20`, `0x30` and `0x50`, which the size does not hold |
+| `words-correct` (in `words`) | the words of `step-0-12w-37`, `step-0-24w-53` and `step-0-24w-62` with e wrong words and f unreadable ones for every pair the rule allows: (f, e) = (0, 1), (0, 2), (1, 0), (1, 1), (2, 0), (2, 1), (3, 0) and (4, 0), at 36, 48 and 56 words. Correction is optional (§3.2), so these bind only a reader that corrects; one that does not answers `words_do_not_check` |
+| `words-do-not-check` (in `words`) | at each size: one unreadable and two wrong words, five unreadable, three wrong (each of which would decode without the rule) and seven unreadable (which would not); and, at 48 words, the lists of step 5 and of a set unused bit below with one other word changed, which a correction restores to that list, so after a correction they do not check |
+| `words-not-aqrv` (in `words`) | 35 and 37 words, 49 words; the last data word's lowest unused bit set, at 36 and 48 words, and step 5 at 48 words, each with check words made over it so that it checks |
+| `words-naming` (in `words`) | every word by its first four letters, in upper case at lengths from four letters to whole, and in full; and one position each with a wrong fifth letter, a letter added, four letters that begin no word, and a word with U+212A KELVIN SIGN in place of its k (not an ASCII letter), each unreadable and filled by the check |
 | `qr_text` (its own list) | the 32-byte size's text form (`AQRV.md` §3, §9), each with `text` and `expect`: the step 0 case's 47 characters, which decode to its envelope and open; and, not recognised, each with its reason: the value 256^32 written out, the text with its last character removed (46) and with a `0` before it (48), its first letter in lower case, a `#` in place of its 21st character, and the KEF version 5 envelope above as Krux's base43 text, which decodes to 32 bytes starting 0x41 |
 | `not-recognised` | KEF version 20 envelopes, built by `gen.py` from [`docs/KEF.md`](https://github.com/bitcoinpasada/faraday/blob/main/docs/KEF.md) §3 and §4: 53 bytes with an empty id and 62 bytes with a 9-byte id. Each is real: PBKDF2-HMAC-SHA-256 at 100,000 iterations, AES-256-GCM, a 12-byte IV, the tag cut to 4 bytes. The case lists the passphrase and plaintext |
 
@@ -114,7 +149,17 @@ libraries: PyCA cryptography's Argon2id; HKDF-Expand and HMAC-SHA-256 over `hmac
 takes an envelope and a passphrase and answers not recognised, refused (with the rule) or
 opened (with the fields), and it seals the inputs of every case that opens and must make the
 same envelope. It compares every intermediate value the file gives, the outcome, the item and,
-for a case whose tag is right, the kind and the rule that refuses it. It is a second reader
+for a case whose tag is right, the kind and the rule that refuses it. It reads the 37-byte size,
+writes every case's words from its envelope and reads them back, and reads every list of words:
+the outcome, the positions unreadable and wrong, the corrections, the words, the envelope and
+what it opens to, and for words that do not check whether they would decode with `2e + f <= 6`.
+Its GF(1024) arithmetic and errors-and-erasures decoder (syndromes, Berlekamp–Massey started
+from the erasure locator, a Chien search over the written positions, Forney) are its own; it
+checks the generator against its six roots, the three-symbol form against SLIP-0039's
+`rs1024_polymod` and the decoder on random code words before it starts. Where `reedsolo` is
+installed it also decodes every list that needs correcting through that library (`RSCodec(6, nsize=1023, c_exp=10,
+prim=0x409, generator=2, fcr=1)`, the code word 1, `cs`, the words, the last one XOR 1, a
+mapping it checks by encoding first) and requires the same answer. It is a second reader
 by Faraday's authors, so it is not the outside implementation `AQRV.md` §11 asks for.
 
 ## Running
@@ -124,8 +169,9 @@ From the repository root:
     python3 -I -B vectors/gen.py            # writes the files
     python3 -I -B vectors/gen.py --check    # compares, exit 1 on a difference
     python3 -I -B vectors/check.py          # the second reader; --no-qr skips the decoders
+    uv run --no-project --with cryptography --with reedsolo python3 -I -B vectors/check.py --no-qr   # and reedsolo's decoder
 
-`gen.py` needs `argon2-cffi` and `cryptography`; `check.py` needs `cryptography` (a version with Argon2id), and for the pictures `zxingcpp`, Pillow and `zbarimg`, each skipped with a note if missing. The whole run takes about 40 seconds and up
+`gen.py` needs `argon2-cffi` and `cryptography`; `check.py` needs `cryptography` (a version with Argon2id), for the pictures `zxingcpp`, Pillow and `zbarimg`, and for a second decoding of the words `reedsolo`, each skipped with a note if missing. The whole run takes about 40 seconds and up
 to 1 GiB of memory (the one Argon2id run at the 1 GiB step at a time).
 
 ## The Rust library

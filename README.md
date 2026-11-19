@@ -14,13 +14,13 @@ it.
 
 | Path | What it holds |
 |---|---|
-| [`AQRV.md`](AQRV.md) | the specification: the envelope (§3), the header (§4), memory steps (§5), keys, encryption and the tag (§6), false matches (§8), recognition (§9), the passphrase (§10), test vectors (§11), security analysis (§12), questions for an outside cryptographer (§13), comparison with KEF and an OpenPGP QR vault (§14) |
-| [`vectors/aqrv.json`](vectors/aqrv.json) | 179 test cases, each with its inputs, every intermediate value and the expected outcome |
+| [`AQRV.md`](AQRV.md) | the specification: the envelope (§3), the words form (§3.2), the header (§4), memory steps (§5), keys, encryption and the tag (§6), false matches (§8), recognition (§9), the passphrase (§10), test vectors (§11), security analysis (§12), questions for an outside cryptographer (§13), comparison with KEF and an OpenPGP QR vault (§14) |
+| [`vectors/aqrv.json`](vectors/aqrv.json) | 195 test cases, each with its inputs, every intermediate value and the expected outcome, the words of each envelope a sheet of words can hold, and 51 entries of words to read: corrected, not checking, not AQRV words, and named by their first letters |
 | [`vectors/qr-32.png`](vectors/qr-32.png), [`qr-53.png`](vectors/qr-53.png), [`qr-62.png`](vectors/qr-62.png) | the QR code of one case at each size |
 | [`vectors/gen.py`](vectors/gen.py) | writes the vectors; `--check` compares without writing |
 | [`vectors/check.py`](vectors/check.py) | a second reader and writer, written from the specification alone, run over every case |
 | [`vectors/README.md`](vectors/README.md) | what the vectors hold, what computed them, what is not in them |
-| [`reference/`](reference) | the code and data `gen.py` reads, each folder with its source, license and SHA-256: `qrcodegen` (Nayuki's QR code generator), `python-mnemonic` (Trezor's BIP 39 library), `bip39-vectors` (its test vectors) and `bip93` (codex32's text and vectors) |
+| [`reference/`](reference) | the code and data `gen.py` reads, each folder with its source, license and SHA-256: `qrcodegen` (Nayuki's QR code generator), `python-mnemonic` (Trezor's BIP 39 library), `bip39-vectors` (its test vectors), `python-shamir-mnemonic` (the word list of Trezor's SLIP-39 library) and `bip93` (codex32's text and vectors) |
 
 ## The reference implementation
 
@@ -118,11 +118,13 @@ release itself, check out that tag in Faraday's repository and follow
 
 `gen.py` needs the Python packages `argon2-cffi` and `cryptography`;
 `check.py` needs `cryptography` (a version with Argon2id) and, for the QR
-pictures, `zxingcpp`, Pillow and the `zbarimg` program, each skipped with a
-note if missing. From the repository root:
+pictures, `zxingcpp`, Pillow and the `zbarimg` program, and for a second
+decoding of the words `reedsolo`, each skipped with a note if missing. From
+the repository root:
 
     python3 -I -B vectors/gen.py --check    # the files are what gen.py makes
     python3 -I -B vectors/check.py          # the second reader; --no-qr skips the decoders
+    uv run --no-project --with cryptography --with reedsolo python3 -I -B vectors/check.py --no-qr
 
 The run takes about 40 seconds and up to 1 GiB of memory.
 
