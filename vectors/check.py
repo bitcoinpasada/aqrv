@@ -20,7 +20,8 @@ generator is the product of its six roots, that the three-root form is
 SLIP-0039's rs1024_polymod (copied from SLIP-0039) on 3000 inputs, and that
 the decoder recovers random code words at every 2e + f <= 6. It writes every
 case's words from its envelope and reads them back, and reads every list of
-words against its expect. Where reedsolo is installed, every list that
+words and every text of words (section 3.2, reading words from text) against
+its expect. Where reedsolo is installed, every list that
 needs correcting is also decoded through it (the code word 1 || cs || words
 with the last XOR 1, a mapping checked by encoding first) and must give the
 same answer.
@@ -644,6 +645,172 @@ def read_words(inputs, limit=RULE_LIMIT, decoder=None):
     return ("words", env, [i + 1 for i in unread], [i + 1 for i in wrong], corrected, [wl[x] for x in vals])
 
 
+# ---------------------------------------------------------------- words from text (section 3.2)
+
+MAX_TEXT_BYTES, MAX_CUTS, MAX_READINGS, MAX_POSITIONS = 16384, 1024, 1024, 56
+MARK_RANGES = [(0x0300, 0x036F), (0x1AB0, 0x1AFF), (0x1DC0, 0x1DFF), (0x20D0, 0x20FF), (0xFE20, 0xFE2F)]
+
+
+def is_mark(ch):
+    return any(a <= ord(ch) <= b for a, b in MARK_RANGES)
+
+
+def is_letter(ch):
+    """Unicode's Alphabetic property, which the standard library lacks:
+    Alphabetic is Lu, Ll, Lt, Lm, Lo, Nl and Other_Alphabetic. This takes the
+    general categories and leaves out Other_Alphabetic, whose characters are
+    all of category Mn, Mc or So; alphabetic_unsure() names any character
+    where the two could differ, and the run refuses a text holding one."""
+    return unicodedata.category(ch) in ("Lu", "Ll", "Lt", "Lm", "Lo", "Nl")
+
+
+def alphabetic_unsure(text):
+    return sorted({"U+%04X" % ord(ch) for ch in text
+                   if unicodedata.category(ch) in ("Mn", "Mc", "Me", "So") and not is_mark(ch)})
+
+
+def join_hyphens(text):
+    """Rule 2: a hyphen at a line break joins, the text read once from the start."""
+    out, i, n = [], 0, len(text)
+    while i < n:
+        ch = text[i]
+        if ch == "-" and i > 0 and is_letter(text[i - 1]):
+            j = i + 1
+            while j < n and text[j] in " \t":
+                j += 1
+            if text.startswith("\r\n", j):
+                j += 2
+            elif j < n and text[j] == "\n":
+                j += 1
+            else:
+                j = -1
+            if j >= 0:
+                while j < n and text[j] in " \t":
+                    j += 1
+                if j < n and is_letter(text[j]):
+                    i = j
+                    continue
+        out.append(ch)
+        i += 1
+    return "".join(out)
+
+
+def text_runs(text):
+    """Rule 3: the runs, each with the separators directly before it."""
+    runs, seps, i, n = [], [], 0, len(text)
+    sep = []
+    while i < n:
+        ch = text[i]
+        if ch == "?" or is_letter(ch) or is_mark(ch):
+            q = ch == "?"
+            j = i
+            while j < n and ((text[j] == "?") if q else (is_letter(text[j]) or is_mark(text[j]))):
+                j += 1
+            runs.append(text[i:j])
+            seps.append("".join(sep))
+            sep = []
+            i = j
+        else:
+            sep.append(ch)
+            i += 1
+    return runs, seps
+
+
+def order_runs(runs, seps):
+    """Rule 4: numbers 1 to n, each once, set the order."""
+    nums = []
+    for sp in seps:
+        found = re.findall(r"[0-9]+", sp)
+        if not found:
+            return runs
+        nums.append(int(found[-1]))
+    if sorted(nums) != list(range(1, len(runs) + 1)):
+        return runs
+    return [r for _, r in sorted(zip(nums, runs))]
+
+
+def run_cuts(run):
+    """Rule 5: the run's cuts, longest first piece first, or "too_many"."""
+    if run[0] == "?" or not all("a" <= ch <= "z" or "A" <= ch <= "Z" for ch in run):
+        return [[run]]  # one unreadable position
+    n = len(run)
+    count = [0] * (n + 1)  # cuts of run[i:], capped above MAX_CUTS
+    count[n] = 1
+    for i in range(n - 1, -1, -1):
+        count[i] = min(MAX_CUTS + 1, sum(count[i + k] for k in range(4, 9)
+                                          if i + k <= n and name_word(run[i:i + k]) is not None))
+    if count[0] > MAX_CUTS:
+        return "too_many"
+    if count[0] == 0:
+        return [[run]]  # one position, unreadable by step 1
+    cuts = []
+
+    def walk(i, acc):
+        if i == n:
+            cuts.append(list(acc))
+            return
+        for k in range(8, 3, -1):
+            if i + k <= n and count[i + k] and name_word(run[i:i + k]) is not None:
+                walk(i + k, acc + [run[i:i + k]])
+
+    walk(0, [])
+    return cuts
+
+
+def read_text_words(text, decoder=None):
+    """Section 3.2, reading words from text. Returns ("too_many",),
+    ("ambiguous",), or read_words' answer for the chosen reading."""
+    if len(text.encode("utf-8")) > MAX_TEXT_BYTES:
+        return ("too_many",)
+    runs, seps = text_runs(join_hyphens(text))
+    runs = order_runs(runs, seps)
+    all_cuts = []
+    for r in runs:
+        c = run_cuts(r)
+        if c == "too_many":
+            return ("too_many",)
+        all_cuts.append(c)
+    # rule 6: readings of at most 56 positions, counted before they are made
+    least = [0] * (len(all_cuts) + 1)
+    for i in range(len(all_cuts) - 1, -1, -1):
+        least[i] = least[i + 1] + min(len(c) for c in all_cuts[i])
+    ways = [{0: 1}]
+    for cuts in all_cuts:
+        nxt = {}
+        for k, w in ways[-1].items():
+            for c in cuts:
+                if k + len(c) <= MAX_POSITIONS:
+                    nxt[k + len(c)] = min(MAX_READINGS + 1, nxt.get(k + len(c), 0) + w)
+        ways.append(nxt)
+    if sum(ways[-1].values()) > MAX_READINGS:
+        return ("too_many",)
+    readings = []
+
+    def walk(i, acc):
+        if i == len(all_cuts):
+            readings.append(list(acc))
+            return
+        for c in all_cuts[i]:
+            if len(acc) + len(c) + least[i + 1] <= MAX_POSITIONS:
+                walk(i + 1, acc + c)
+
+    walk(0, [])
+    # rule 7
+    kept = [r for r in readings if len(r) in WORDS_SIZE]
+    if not kept:
+        first = readings[0] if readings else [p for c in all_cuts for p in c[0]]
+        return ("not_aqrv", "count", len(first))
+    as_is = [r for r in kept if all(name_word(s) is not None for s in r) and words_valid([name_word(s) for s in r])]
+    answers = [read_words(r, decoder=decoder) for r in (as_is or kept)]
+    # rule 8
+    envs = [a for a in answers if a[0] == "words"]
+    if not envs:
+        return ("not_aqrv", "step 5") if any(a[0] == "not_aqrv" for a in answers) else ("no_check",)
+    if len({a[1] for a in envs}) == 1 and not any(a[0] == "not_aqrv" for a in answers):
+        return min(envs, key=lambda a: len(a[4]))  # min keeps the first of the fewest
+    return ("ambiguous",)
+
+
 def reedsolo_decoder():
     """reedsolo's errors-and-erasures decoder as a drop-in for rs_correct, or
     None if reedsolo is not installed. The mapping is checked by encoding."""
@@ -1030,11 +1197,37 @@ def main():
                 named = [name_word(s) for s in w["input"]]
                 if (outside(named, NCHECK) is None) != (rs_correct(named, NCHECK) is None):
                     fails.append("%s: with 2e + f <= 6, reedsolo and our decoder differ" % name)
+    # the words as text
+    text_n = 0
+    for w in data.get("words_text", []):
+        text_n += 1
+        name, exp = w["name"], w["expect"]
+        unsure = alphabetic_unsure(w["text"])
+        if unsure:
+            fails.append("%s: holds %s, where the Alphabetic property is not known here" % (name, unsure))
+            continue
+        got = read_text_words(w["text"])
+        out = exp["outcome"]
+        mine = {"words": "opens", "no_check": "words_do_not_check", "not_aqrv": "not_aqrv_words",
+                "ambiguous": "ambiguous", "too_many": "too_many"}[got[0]]
+        if mine != out:
+            fails.append("%s: %s, expected %s (%s)" % (name, mine, out, exp.get("reason", "")))
+        elif out == "opens":
+            _, env, unread, wrong, corrected, words = got
+            for key, m in (("unreadable", unread), ("wrong", wrong), ("corrected", corrected),
+                           ("words", words), ("envelope", env.hex())):
+                if m != exp[key]:
+                    fails.append("%s: %s %s, expected %s" % (name, key, m, exp[key]))
+            ans, _ = read(env, w["passphrase"])
+            if ans[0] != "opens" or ans[1] != int(exp["kind"], 16) or ans[2] != exp["item"]:
+                fails.append("%s: expected to open as %s, got %s" % (name, exp["kind"], ans))
+        if outside and read_text_words(w["text"], decoder=outside) != got:
+            fails.append("%s: through reedsolo the text reads otherwise" % name)
     qr_notes = [] if "--no-qr" in sys.argv else qr_checks(data, fails)
     print("%d cases: %d open, %d do not open, %d not recognised; %d sealed again; %d values compared; "
-          "%d text forms; %d cases' words; %d lists of words (%s); %d disagreements"
+          "%d text forms; %d cases' words; %d lists of words (%s); %d texts of words; %d disagreements"
           % (len(cases), opened, refused, unrec, sealed, values_n, texts, words_n, len(data.get("words", [])),
-             "%d decodings repeated by reedsolo" % outside.calls if outside else outside_note, len(fails)))
+             "%d decodings repeated by reedsolo" % outside.calls if outside else outside_note, text_n, len(fails)))
     for n in qr_notes:
         print("qr " + n)
     for f in fails:

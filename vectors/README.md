@@ -116,8 +116,8 @@ made from), `passphrase`, `text` (the whole text, as pasted) and `expect`. One
 that opens expects what an entry of `words` expects, its `corrected` inputs as
 the text gives them (`??`, a word with a combining mark); any other expects
 `outcome` and `reason`, in words. `gen.py` reads every text by its own reader,
-written from §3.2, and stops if one differs. `check.py` does not read
-`words_text` yet.
+written from §3.2, and stops if one differs. `check.py` reads every
+text by its own reader, written from §3.2 alone, and compares the same fields.
 
 ## Groups
 

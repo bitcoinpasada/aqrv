@@ -1046,7 +1046,7 @@ characters (zxing-cpp is run too where it is installed). It writes and reads the
 §3.2 at all three of their sizes, with its own GF(1024) arithmetic and its own
 errors-and-erasures decoder (syndromes, Berlekamp–Massey started from the erasure locator,
 Forney), checks the generator against its roots and the three-symbol form against
-SLIP-0039's `rs1024_polymod`, and agrees with every list of words; where `reedsolo` is
+SLIP-0039's `rs1024_polymod`, and agrees with every list of words and, read by its own reader of words from text, every text of words; where `reedsolo` is
 installed, it decodes every list that needs correcting through that library too and requires the same result. It was written by Faraday's authors,
 so it is not the outside implementation this section and the **Open:** line ask for.
 The Rust library `aqrv`, the command line `aqrv-cli` and the desktop test app in [`rust/`](rust) are also by Faraday's authors; the library's tests read every case, its words where it has them, every list of words and the three pictures, and `aqrv vectors` runs the cases and the lists of words. They are not an outside implementation either.
