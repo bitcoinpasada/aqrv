@@ -47,6 +47,27 @@ too_many_lines = "warn"
 
 # Dependencies are optimized even in dev builds so that the Argon2id tests
 # run in seconds.
+# The release's programs: small, one unit with whole-program optimisation,
+# no unwinding and no symbols. The drawing crates are built for speed rather
+# than size, and Faraday's parsers check arithmetic overflow as in Faraday's
+# own build, so a wrapped length stops the program instead of reading on.
+[profile.release]
+panic = "abort"
+opt-level = "s"
+lto = "fat"
+codegen-units = 1
+strip = true
+debug = 0
+
+[profile.release.package.tiny-skia]
+opt-level = 3
+[profile.release.package.faraday-draw]
+opt-level = 3
+[profile.release.package.faraday-bip]
+overflow-checks = true
+[profile.release.package.faraday-codec]
+overflow-checks = true
+
 [profile.dev]
 debug = "line-tables-only"
 

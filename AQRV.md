@@ -13,7 +13,7 @@ is a vault in a QR code. It was first called the Argon2id Compact Envelope
 The reference implementation, a desktop test app and a command line for
 Linux and Windows on x86-64, is downloaded from
 [faradayoffline.app/aqrv](https://faradayoffline.app/aqrv/#try) or from its
-[GitHub release](https://github.com/bitcoinpasada/faraday/releases/tag/aqrv-test-1),
+[GitHub release](https://github.com/bitcoinpasada/aqrv/releases/tag/aqrv-test-2),
 with `SHA256SUMS`. It is a test release, written by Faraday's authors and not
 an outside implementation (§11): use it with test data only.
 

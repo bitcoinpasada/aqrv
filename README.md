@@ -86,33 +86,52 @@ runs the library and `check.py`'s second reader over many generated codes
 | Program | Package and binary | Output name |
 |---|---|---|
 | Argon QR Vault for Linux | `aqrv-desktop`, `argon-qr-vault` | `argon-qr-vault` |
-| Argon QR Vault for Windows | `aqrv-desktop`, `argon-qr-vault`, target `x86_64-pc-windows-gnu` | `argon-qr-vault.exe` |
+| Argon QR Vault for Windows | `aqrv-desktop`, `argon-qr-vault`, target `x86_64-pc-windows-gnu` | `argon-qr-vault.exe` (`Argon-QR-Vault.exe` in the release) |
 | Argon QR Vault command line for Linux | `aqrv-cli`, `aqrv` | `aqrv` |
 | Argon QR Vault command line for Windows | `aqrv-cli`, `aqrv`, target `x86_64-pc-windows-gnu` | `aqrv.exe` |
 
-Each is `cargo build --release --locked -p PACKAGE --bin BINARY` (add
-`--target x86_64-pc-windows-gnu` for Windows, with mingw-w64 installed). The
-release downloads were built in Faraday's build containers (Debian 11, so
-that the Linux binary needs glibc 2.31 or older; mingw-w64 for Windows), with
-paths remapped and symbols stripped; this repository does not hold those
-containers, so a plain build here is a test build, not the same file.
+Each is `cargo build --release --locked -p PACKAGE --bin BINARY` in `rust/`
+(add `--target x86_64-pc-windows-gnu` for Windows, with mingw-w64 installed),
+with the release profile in `rust/Cargo.toml` (symbols stripped). A build on
+another system is a test build: the release's files are built as the next
+section says, and only such a build gives the same files.
 
-### The release "Argon QR Vault test 1"
+### The release "Argon QR Vault test 2"
 
-Its downloads, for Linux and Windows on x86-64, are on the
-[aqrv-test-1 release](https://github.com/bitcoinpasada/faraday/releases/tag/aqrv-test-1)
-of Faraday's repository and at
-[faradayoffline.app/aqrv](https://faradayoffline.app/aqrv/#try), with
-`SHA256SUMS`. It is a test release: use it with test data only.
+Its downloads, for Linux and Windows on x86-64, are on this repository's
+[aqrv-test-2 release](https://github.com/bitcoinpasada/aqrv/releases/tag/aqrv-test-2)
+and at [faradayoffline.app/aqrv](https://faradayoffline.app/aqrv/#try), with
+`SHA256SUMS`, which names the commit they were built from. It is a test
+release: use it with test data only. The Linux archive holds `argon-qr-vault`
+and `aqrv`; the Windows zip holds `Argon-QR-Vault.exe` (the build's
+`argon-qr-vault.exe`, renamed) and `aqrv.exe`.
 
-It cannot be rebuilt from this repository. Its tag `aqrv-test-1` is in
-Faraday's repository (commit `d97d7ab14`), and its four programs, with
-`SHA256SUMS`, were built there in Faraday's containers from the sources of
-that commit. This repository carries a later state of the code, against
-a later Faraday commit, and has not got those containers, so its binaries
-differ from the release's and the checksums do not match. To rebuild the
-release itself, check out that tag in Faraday's repository and follow
-`docs/DEVELOPING.md` there ("Reproducing a release").
+To rebuild it, check out the tag `aqrv-test-2` in this repository and build
+the four programs as above, with Rust 1.97.0 from `rust-toolchain.toml`:
+
+- the Linux programs on Debian 11, so that they need glibc 2.31 or older;
+- the Windows programs on Linux with mingw-w64, for `x86_64-pc-windows-gnu`;
+- in both, every local path rewritten, so that no binary holds a path of the
+  computer that built it.
+
+The same files come only from the same paths and settings: the Linux
+programs then come out byte for byte the same, and the Windows ones differ
+only in the link time and checksum in their headers. The release was built
+with this repository at `/src` (`cd /src/rust`), `HOME=/root`,
+`CARGO_HOME=/cargo`, `CARGO_TARGET_DIR=/build/target`, `SOURCE_DATE_EPOCH`
+the commit's time (`git log -1 --format=%ct`), and
+
+    RUSTFLAGS="--remap-path-prefix=/root=/build --remap-path-prefix=/cargo/registry/src=/cargo --remap-path-prefix=/cargo/git/checkouts=/cargo-git --remap-path-prefix=/src=/aqrv --remap-path-prefix=/build/target=/target"
+    CFLAGS="-ffile-prefix-map=/root=/build -ffile-prefix-map=/cargo/registry/src=/cargo -ffile-prefix-map=/cargo/git/checkouts=/cargo-git -ffile-prefix-map=/src=/aqrv"
+
+(for Windows, `CFLAGS_x86_64_pc_windows_gnu` set to the same as `CFLAGS`).
+
+The release's builds ran in Faraday's build containers, which are such
+systems (`faraday/build/linux` and `faraday/build/windows` in Faraday's
+repository).
+
+The earlier test release, aqrv-test-1, without the words form, was built from
+Faraday's repository ([its release](https://github.com/bitcoinpasada/faraday/releases/tag/aqrv-test-1)).
 
 ## Checking the vectors
 
