@@ -466,3 +466,50 @@ fn a_heading_pasted_with_the_words_does_not_open_silently() {
         assert!(got.is_err(), "{heading:?}: {got:?}");
     }
 }
+
+/// What an entry of `words_text` expects, as the text reader says it.
+fn expected_text(entry: &Value) -> Result<(), NotTextWords> {
+    let expect = &entry["expect"];
+    let reason = expect["reason"].as_str().unwrap_or("");
+    match expect["outcome"].as_str().unwrap() {
+        "opens" => Ok(()),
+        "words_do_not_check" => Err(NotTextWords::Words(NotWords::DoNotCheck)),
+        "not_aqrv_words" => Err(NotTextWords::Words(NotWords::NotAqrv(not_aqrv_reason(
+            &reason.replacen(" positions", " words", 1),
+        )))),
+        "ambiguous" => Err(NotTextWords::Ambiguous),
+        "too_many" => Err(NotTextWords::TooMany),
+        other => panic!("an outcome {other}"),
+    }
+}
+
+#[test]
+fn every_text_of_words_reads_as_it_expects_and_opens_to_its_item() {
+    let v = vectors();
+    let entries = v["words_text"].as_array().unwrap();
+    assert_eq!(entries.len(), 47);
+    let c = Compute::unchecked();
+    for entry in entries {
+        let name = entry["name"].as_str().unwrap();
+        let got = read_text(entry["text"].as_str().unwrap());
+        assert_eq!(
+            got.as_ref().map(|_| ()).map_err(|e| *e),
+            expected_text(entry),
+            "{name}"
+        );
+        let Ok(read) = got else { continue };
+        let expect = &entry["expect"];
+        check_read(name, &read, expect);
+        let opened = open(&c, &read.envelope, entry["passphrase"].as_str().unwrap()).unwrap();
+        let kind = format!("0x{:02X}", opened.item.kind().unwrap() as u8);
+        assert_eq!(kind, expect["kind"].as_str().unwrap(), "{name}");
+        let Item::Entropy(bytes) = &opened.item else {
+            panic!("{name}: the vectors' texts hold seeds")
+        };
+        assert_eq!(
+            hex(bytes),
+            expect["item"]["hex"].as_str().unwrap(),
+            "{name}"
+        );
+    }
+}

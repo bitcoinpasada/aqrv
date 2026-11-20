@@ -3,8 +3,8 @@
 //! no secret of the person using the tool.
 
 use aqrv::{
-    Item, Kind, NotAqrvWords, NotOpened, NotWords, Refused, Size, Step, from_words, open,
-    recognise, seal, to_words,
+    Item, Kind, NotAqrvWords, NotOpened, NotTextWords, NotWords, ReadWords, Refused, Size, Step,
+    from_words, open, recognise, seal, to_words,
 };
 use faraday_bip::json::{self, Value};
 use faraday_crypto::work::Compute;
@@ -72,6 +72,10 @@ pub fn vectors(c: &Compute, args: &Args) -> Run {
         let lists = file.get("words").and_then(Value::as_array);
         for entry in lists.unwrap_or(&[]) {
             tally(text_of(entry, "name"), run_words(c, entry));
+        }
+        let texts = file.get("words_text").and_then(Value::as_array);
+        for entry in texts.unwrap_or(&[]) {
+            tally(text_of(entry, "name"), run_text(c, entry));
         }
     }
     println!("{} agree, {} differ", agree, differ);
@@ -235,25 +239,61 @@ fn positions(v: Option<&Value>) -> Vec<usize> {
 fn run_words(c: &Compute, entry: &Value) -> Result<(), String> {
     let input = strings(entry.get("input").ok_or("no input")?)?;
     let expect = entry.get("expect").ok_or("no expectation")?;
+    match from_words(&input) {
+        Ok(read) => check_read(c, entry, &read),
+        Err(e) => refused_as_expected(expect, e),
+    }
+}
+
+/// The outcome of a refusal against the entry's, for its reason.
+fn refused_as_expected(expect: &Value, got: NotWords) -> Result<(), String> {
     let reason = text_of(expect, "reason");
-    let got = from_words(&input);
-    let read = match (text_of(expect, "outcome"), got) {
-        ("opens", Ok(read)) => read,
-        ("words_do_not_check", Err(NotWords::DoNotCheck)) => return Ok(()),
-        ("not_aqrv_words", Err(NotWords::NotAqrv(why))) => {
+    match (text_of(expect, "outcome"), got) {
+        ("words_do_not_check", NotWords::DoNotCheck) => Ok(()),
+        ("not_aqrv_words", NotWords::NotAqrv(why)) => {
             let right = match why {
-                NotAqrvWords::Count(n) => reason.starts_with(&format!("{n} words")),
+                NotAqrvWords::Count(n) => {
+                    reason.starts_with(&format!("{n} words"))
+                        || reason.starts_with(&format!("{n} positions"))
+                }
                 NotAqrvWords::UnusedBits => reason.contains("unused"),
                 NotAqrvWords::Step => reason.contains("step"),
             };
-            return if right {
+            if right {
                 Ok(())
             } else {
                 Err(format!("{why:?}"))
-            };
+            }
         }
-        (want, got) => return Err(format!("{:?} where {want} is expected", got.map(|_| ()))),
-    };
+        (want, got) => Err(format!("{got:?} where {want} is expected")),
+    }
+}
+
+/// §3.2, reading words from text: a text reads as it expects.
+fn run_text(c: &Compute, entry: &Value) -> Result<(), String> {
+    let expect = entry.get("expect").ok_or("no expectation")?;
+    match (
+        text_of(expect, "outcome"),
+        aqrv::read_text(text_of(entry, "text")),
+    ) {
+        ("opens", Ok(read)) => check_read(c, entry, &read),
+        ("ambiguous", Err(NotTextWords::Ambiguous)) | ("too_many", Err(NotTextWords::TooMany)) => {
+            Ok(())
+        }
+        (_, Err(NotTextWords::Words(e))) => refused_as_expected(expect, e),
+        (want, got) => Err(format!("{:?} where {want} is expected", got.map(|_| ()))),
+    }
+}
+
+/// A read list against the entry's corrections, words, envelope and item.
+fn check_read(c: &Compute, entry: &Value, read: &ReadWords) -> Result<(), String> {
+    let expect = entry.get("expect").ok_or("no expectation")?;
+    if text_of(expect, "outcome") != "opens" {
+        return Err(format!(
+            "read where {} is expected",
+            text_of(expect, "outcome")
+        ));
+    }
     let corrected: Vec<(usize, &str, &str)> = expect
         .get("corrected")
         .and_then(Value::as_array)
