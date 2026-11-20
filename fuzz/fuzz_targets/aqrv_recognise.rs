@@ -19,10 +19,10 @@ fuzz_target!(|data: &[u8]| {
         assert_eq!(Step::of_header(data[0]), Some(h.step));
     }
     match recognise_code(data) {
-        None => assert!(data.len() == 32 || header.is_none()),
+        None => assert!(matches!(data.len(), 32 | 37) || header.is_none()),
         Some(envelope) => {
             assert!(recognise(&envelope).is_some());
-            if data.len() == 32 || header.is_none() {
+            if matches!(data.len(), 32 | 37) || header.is_none() {
                 // Text: 47 characters that read back to the same bytes.
                 let text = std::str::from_utf8(data).expect("only text is read as text");
                 let bytes: [u8; 32] = envelope.as_slice().try_into().expect("32 bytes");

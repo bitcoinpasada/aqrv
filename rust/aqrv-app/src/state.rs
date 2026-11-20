@@ -1,7 +1,7 @@
 //! What the app holds: the tab and step, what was chosen and typed, and
 //! what the worker sent back. Drawing reads this and changes nothing.
 
-use aqrv::{Header, Item, Size, Step};
+use aqrv::{Header, Item, ReadWords, Size, Step};
 use faraday_text::Text;
 use zeroize::Zeroizing;
 
@@ -9,7 +9,7 @@ use crate::samples::SAMPLES;
 use crate::worker::{Fail, Made, Shown, Working};
 
 /// The sizes the choice offers, smallest first.
-pub const SIZES: [Size; 3] = [Size::Tiny, Size::Small, Size::Large];
+pub const SIZES: [Size; 4] = [Size::Tiny, Size::Words, Size::Small, Size::Large];
 
 /// The app's two tabs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -79,6 +79,8 @@ pub enum Field {
     Again,
     /// The path of a file to open.
     Path,
+    /// The words of a code to open.
+    Words,
     /// The passphrase of the code being opened.
     OpenPass,
 }
@@ -102,6 +104,9 @@ pub enum OpenStage {
     Opened,
     /// Neither tag nor layout holds.
     DoesNotOpen,
+    /// The words were not read to a code, for the reason in
+    /// [`OpenState::words_note`]: no passphrase is asked for.
+    NotWords,
     /// Argon2id's memory could not be had.
     NotEnoughMemory,
 }
@@ -119,6 +124,13 @@ pub enum Dialog {
 pub struct OpenState {
     /// The typed path.
     pub path: Text,
+    /// The typed or pasted words, line breaks kept.
+    pub words: Text,
+    /// The words read, with what was filled or changed, when the code
+    /// came from words.
+    pub read: Option<ReadWords>,
+    /// Why the words were not read to a code.
+    pub words_note: Option<Text>,
     /// How far it has come.
     pub stage: OpenStage,
     /// The code's bytes, once the file is one.
@@ -137,6 +149,9 @@ impl OpenState {
     fn new() -> OpenState {
         OpenState {
             path: Text::new(),
+            words: Text::new(),
+            read: None,
+            words_note: None,
             stage: OpenStage::Empty,
             envelope: None,
             header: None,
@@ -178,6 +193,12 @@ pub enum Action {
     Again,
     /// Reads the file at the typed path.
     ReadPath,
+    /// Reads the typed or pasted words.
+    ReadWords,
+    /// Asks for the clipboard's text, for the focused field.
+    Paste,
+    /// Puts the made code's words on the clipboard.
+    CopyWords,
     /// Opens the code with the typed passphrase.
     Unlock,
     /// Starts Open again with no file.
@@ -316,12 +337,13 @@ impl State {
         }
     }
 
-    fn focused_text(&mut self) -> Option<&mut Text> {
+    pub(crate) fn focused_text(&mut self) -> Option<&mut Text> {
         match self.focus? {
             Field::Own => Some(&mut self.own_text),
             Field::Pass => Some(&mut self.pass),
             Field::Again => Some(&mut self.again),
             Field::Path => Some(&mut self.open.path),
+            Field::Words => Some(&mut self.open.words),
             Field::OpenPass => Some(&mut self.open.pass),
         }
     }
@@ -386,7 +408,7 @@ fn fits(item: &Item, size: Size) -> bool {
         Item::Codex32(s) => {
             let seed = s.len().saturating_sub(22) * 5 / 8;
             seed <= match size {
-                Size::Tiny => 0,
+                Size::Tiny | Size::Words => 0,
                 Size::Small => 24,
                 Size::Large => 32,
             }

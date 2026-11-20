@@ -106,8 +106,17 @@ fn answer(command: Command) -> Vec<Event> {
                 None => Event::FileNotWritten { kind },
             }]
         }
-        Command::RequestClipboard { kind } => vec![Event::ClipboardUnavailable { kind }],
-        Command::WriteClipboard { kind, .. } => vec![Event::ClipboardNotWritten { kind }],
+        // Paste: faraday-window reads the system clipboard (wl-paste or
+        // xclip on Linux, the Win32 clipboard on Windows).
+        Command::RequestClipboard { kind } => {
+            vec![faraday_window::clipboard::Clipboard::system().answer(kind)]
+        }
+        // Copy (the words, which are public): the system's own tool.
+        Command::WriteClipboard { kind, text } => vec![if files::copy(&text) {
+            Event::ClipboardWritten { kind }
+        } else {
+            Event::ClipboardNotWritten { kind }
+        }],
         _ => Vec::new(),
     }
 }

@@ -10,8 +10,8 @@ use std::io::{self, BufRead, Read};
 use std::process::ExitCode;
 
 use aqrv::{
-    Item, NotOpened, Refused, Size, Step, open, recognise, recognise_code, recognise_file, seal,
-    to_text, workings,
+    Item, NotAqrvWords, NotOpened, NotTextWords, NotWords, ReadWords, Refused, Size, Step, open,
+    read_text, recognise, recognise_code, recognise_file, seal, to_text, to_words, workings,
 };
 use faraday_bip::bip39::{Language, Mnemonic};
 use faraday_bip::codex32::Codex32;
@@ -110,13 +110,16 @@ fn step_text(step: Step) -> Text {
 /// §3: the QR level each size is written at.
 fn ecc(size: Size) -> Ecc {
     match size {
-        Size::Tiny | Size::Small => Ecc::Low,
+        Size::Tiny | Size::Words | Size::Small => Ecc::Low,
         Size::Large => Ecc::Medium,
     }
 }
 
 fn qr_file(c: &Compute, envelope: &[u8], path: &str, scale: usize) -> Run {
     let size = Size::of_len(envelope.len()).ok_or_else(|| fail(2, "not recognised"))?;
+    if size == Size::Words {
+        return Err(fail(64, "a 37-byte code has no QR code"));
+    }
     // The 32-byte size is carried in a QR code as its text (§3).
     let text = <[u8; 32]>::try_from(envelope).map(|e| to_text(&e));
     let payload = match &text {
@@ -134,7 +137,7 @@ fn make(c: &Compute, args: &Args) -> Run {
     let p = parse(
         args,
         &["--kind", "--size", "--memory", "--out", "--png", "--scale"],
-        &["--passphrase-stdin"],
+        &["--passphrase-stdin", "--words"],
     )?;
     if !p.positional.is_empty() {
         return Err(usage("make takes no file"));
@@ -161,6 +164,12 @@ fn make(c: &Compute, args: &Args) -> Run {
                 usage(&text!("--memory is one of {}", numbers(&all)))
             })?,
     };
+    if size == Size::Tiny && p.has("--words") {
+        return Err(usage("a 32-byte code has no words; --size 37 has"));
+    }
+    if size == Size::Words && p.value("--png").is_some() {
+        return Err(usage("a 37-byte code has no QR code"));
+    }
     let scale = number(&p, "--scale")?.unwrap_or(8);
 
     let line = stdin_line("item")?;
@@ -195,6 +204,9 @@ fn make(c: &Compute, args: &Args) -> Run {
     // printed beside the file and the picture, and `open --text` takes it.
     if let Ok(bytes) = <[u8; 32]>::try_from(envelope.as_slice()) {
         println!("{}", &*to_text(&bytes));
+    } else if p.has("--words") || size == Size::Words {
+        let words = to_words(&envelope).map_err(|_| fail(3, "the words could not be written"))?;
+        print!("{}", numbered(&words));
     } else if p.value("--out").is_none() && p.value("--png").is_none() {
         println!("{}", hex(&envelope).as_str());
     }
@@ -278,13 +290,104 @@ fn load(c: &Compute, source: &str) -> Result<Vec<u8>, Fail> {
     Ok(text.and_then(envelope_of_text).unwrap_or(bytes))
 }
 
+/// Words numbered from 1, four to a row (§3.2 Writing).
+fn numbered(words: &[&str]) -> String {
+    let mut out = String::new();
+    for (r, row) in words.chunks(4).enumerate() {
+        let cells: Vec<String> = row
+            .iter()
+            .enumerate()
+            .map(|(k, w)| format!("{:>2}. {w:<8}", r * 4 + k + 1))
+            .collect();
+        out.push_str(cells.join("  ").trim_end());
+        out.push('\n');
+    }
+    out
+}
+
+/// `open --words`: the words in the file, on standard input or in
+/// `--text`, read as free text (§3.2 Reading). What was filled or changed
+/// is said before the passphrase is asked for.
+fn envelope_of_words(p: &cli::Parsed) -> Result<Vec<u8>, Fail> {
+    let text = match (p.value("--text"), p.positional.as_slice()) {
+        (Some(text), []) => text.to_string(),
+        (None, [source]) if source == "-" => {
+            if p.has("--passphrase-stdin") {
+                return Err(usage(
+                    "the words and the passphrase cannot both be on standard input",
+                ));
+            }
+            let mut all = String::new();
+            io::stdin()
+                .lock()
+                .take(1 << 20)
+                .read_to_string(&mut all)
+                .map_err(|e| io_fail("standard input", &e))?;
+            all
+        }
+        (None, [source]) => std::fs::read_to_string(source).map_err(|e| io_fail(source, &e))?,
+        _ => {
+            return Err(usage(
+                "open --words takes one file, or - for standard input, or --text",
+            ));
+        }
+    };
+    let read = read_text(&text).map_err(not_words)?;
+    say_corrections(&read);
+    Ok(read.envelope)
+}
+
+fn say_corrections(read: &ReadWords) {
+    eprintln!("{} words read", read.words.len());
+    for c in &read.corrected {
+        let what = if read.unreadable.contains(&c.position) {
+            "filled"
+        } else {
+            "changed"
+        };
+        eprintln!("word {}: {} {what} to {}", c.position, c.input, c.word);
+    }
+    if !read.corrected.is_empty() {
+        eprintln!("compare these with the sheet");
+    }
+}
+
+fn not_words(e: NotTextWords) -> Fail {
+    match e {
+        NotTextWords::Words(NotWords::DoNotCheck) => fail(6, "the words do not check"),
+        NotTextWords::Words(NotWords::NotAqrv(why)) => fail(
+            2,
+            &match why {
+                NotAqrvWords::Count(n) => {
+                    format!("not AQRV words: {n} words, where a code has 36, 48 or 56")
+                }
+                NotAqrvWords::UnusedBits => "not AQRV words: unused bits are set".to_string(),
+                NotAqrvWords::Step => "not AQRV words: a memory step no code has".to_string(),
+            },
+        ),
+        NotTextWords::Ambiguous => fail(
+            6,
+            "the words run together read more than one way: separate them",
+        ),
+        NotTextWords::TooMany => fail(
+            6,
+            "too many ways to read the words run together: separate them",
+        ),
+    }
+}
+
 fn header_of(envelope: &[u8]) -> Result<aqrv::Header, Fail> {
     recognise(envelope).ok_or_else(|| fail(2, "not recognised"))
 }
 
 fn open_command(c: &Compute, args: &Args) -> Run {
-    let p = parse(args, &["--text"], &["--show", "--passphrase-stdin"])?;
+    let p = parse(
+        args,
+        &["--text"],
+        &["--show", "--passphrase-stdin", "--words"],
+    )?;
     let envelope = match (p.value("--text"), p.positional.as_slice()) {
+        _ if p.has("--words") => envelope_of_words(&p)?,
         (Some(text), []) => envelope_of_text(text).ok_or_else(|| fail(2, "not recognised"))?,
         (None, [source]) => {
             if source == "-" && p.has("--passphrase-stdin") {

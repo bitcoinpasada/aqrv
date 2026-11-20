@@ -45,7 +45,7 @@ fn made_tiny() -> (Vec<u8>, Vec<u8>) {
     assert_eq!(app.state().page, Page::Code);
     let made = app.state().made.as_ref().expect("a code was made");
     assert_eq!(made.size, Size::Tiny);
-    assert_eq!(made.matrix.size(), 25);
+    assert_eq!(made.matrix.as_ref().unwrap().size(), 25);
     assert_eq!(made.text.as_deref().map(str::len), Some(47));
     assert_eq!(
         made.label,

@@ -9,14 +9,20 @@ use faraday_text::{Text, text};
 
 /// The envelope lengths `--size` accepts. A size the library adds is
 /// named here; `Size::of_len` says whether it is one.
-pub const SIZE_NUMBERS: [usize; 3] = [32, 53, 62];
+pub const SIZE_NUMBERS: [usize; 4] = [32, 37, 53, 62];
 
 pub const USAGE: &str = "\
 usage:
-  aqrv make    --kind words|codex32|passphrase|note|key [--size 32|53|62]
+  aqrv make    --kind words|codex32|passphrase|note|key [--size 32|37|53|62]
                [--memory 64|128|256|512|1024] [--out FILE.aqrv] [--png FILE.png]
-               [--scale 8] [--passphrase-stdin]
-  aqrv open    FILE|- | --text TEXT [--show] [--passphrase-stdin]
+               [--scale 8] [--words] [--passphrase-stdin]
+  aqrv open    FILE|- | --text TEXT [--words] [--show] [--passphrase-stdin]
+
+  make --words prints the code's words, numbered, four to a row; at
+  --size 37 (a 12-word seed, or text of up to 15 bytes) the code is words
+  and a .aqrv file only, never a QR code. open --words reads words from the
+  file, standard input or TEXT, with or without spaces, numbered or not, by
+  their first four letters or in full, ? for one that cannot be read.
   aqrv inspect FILE|- [--json] [--png FILE.png]
   aqrv vectors [PATH/aqrv.json] [--case NAME] [--skip-large]
   aqrv from-sheet FILE.json --out FILE.aqrv";

@@ -2,7 +2,10 @@
 //! against the library. Everything it reads is public test data, so it holds
 //! no secret of the person using the tool.
 
-use aqrv::{Item, Kind, NotOpened, Refused, Size, Step, open, recognise, seal};
+use aqrv::{
+    Item, Kind, NotAqrvWords, NotOpened, NotWords, Refused, Size, Step, from_words, open,
+    recognise, seal, to_words,
+};
 use faraday_bip::json::{self, Value};
 use faraday_crypto::work::Compute;
 use faraday_text::Text;
@@ -66,6 +69,10 @@ pub fn vectors(c: &Compute, args: &Args) -> Run {
             let name = format!("writer refuses {}", text_of(entry, "reason"));
             tally(&name, run_refusal(c, entry));
         }
+        let lists = file.get("words").and_then(Value::as_array);
+        for entry in lists.unwrap_or(&[]) {
+            tally(text_of(entry, "name"), run_words(c, entry));
+        }
     }
     println!("{} agree, {} differ", agree, differ);
     if differ > 0 {
@@ -102,9 +109,9 @@ fn run_refusal(c: &Compute, entry: &Value) -> Result<(), String> {
         let got = seal(c, &item, "pass", Step::Mib64, size, &mut |_| {
             unreachable!("a refusal comes before any draw")
         });
-        // The 32-byte size does not hold the kind, so it refuses that first.
+        // The 32- and 37-byte sizes do not hold the kind, so it refuses that first.
         let right = match size {
-            Size::Tiny => matches!(got, Err(Refused::KindNotHeld)),
+            Size::Tiny | Size::Words => matches!(got, Err(Refused::KindNotHeld)),
             _ => matches!(got, Err(Refused::Codex32(_))),
         };
         if !right {
@@ -145,6 +152,16 @@ fn run_case(c: &Compute, case: &Value) -> Result<(), String> {
     let envelope = unhex(text_of(case, "envelope")).ok_or("the envelope is not hex")?;
     let passphrase = text_of(case, "passphrase");
     let expect = case.get("expect").ok_or("no expectation")?;
+    if let Some(words) = case.get("words") {
+        let words = strings(words)?;
+        if to_words(&envelope).map_err(|e| format!("no words: {e:?}"))? != words {
+            return Err("other words".into());
+        }
+        match from_words(&words) {
+            Ok(read) if read.envelope == envelope && read.corrected.is_empty() => {}
+            _ => return Err("the words do not read back to the envelope".into()),
+        }
+    }
     match text_of(expect, "outcome") {
         "opens" => {
             let opened = open(c, &envelope, passphrase).map_err(|e| format!("{e:?}"))?;
@@ -196,4 +213,79 @@ fn run_case(c: &Compute, case: &Value) -> Result<(), String> {
         },
         other => Err(format!("an outcome {other}")),
     }
+}
+
+fn strings(v: &Value) -> Result<Vec<&str>, String> {
+    let all = v.as_array().ok_or("not a list")?;
+    all.iter()
+        .map(|w| w.as_str().ok_or_else(|| "not a string".to_string()))
+        .collect()
+}
+
+fn positions(v: Option<&Value>) -> Vec<usize> {
+    let all = v.and_then(Value::as_array).unwrap_or(&[]);
+    all.iter()
+        .filter_map(Value::as_u64)
+        .map(|p| p as usize)
+        .collect()
+}
+
+/// §3.2: a list of words reads as it expects: corrected and opened to its
+/// item, not checking, or not AQRV words for its reason.
+fn run_words(c: &Compute, entry: &Value) -> Result<(), String> {
+    let input = strings(entry.get("input").ok_or("no input")?)?;
+    let expect = entry.get("expect").ok_or("no expectation")?;
+    let reason = text_of(expect, "reason");
+    let got = from_words(&input);
+    let read = match (text_of(expect, "outcome"), got) {
+        ("opens", Ok(read)) => read,
+        ("words_do_not_check", Err(NotWords::DoNotCheck)) => return Ok(()),
+        ("not_aqrv_words", Err(NotWords::NotAqrv(why))) => {
+            let right = match why {
+                NotAqrvWords::Count(n) => reason.starts_with(&format!("{n} words")),
+                NotAqrvWords::UnusedBits => reason.contains("unused"),
+                NotAqrvWords::Step => reason.contains("step"),
+            };
+            return if right {
+                Ok(())
+            } else {
+                Err(format!("{why:?}"))
+            };
+        }
+        (want, got) => return Err(format!("{:?} where {want} is expected", got.map(|_| ()))),
+    };
+    let corrected: Vec<(usize, &str, &str)> = expect
+        .get("corrected")
+        .and_then(Value::as_array)
+        .unwrap_or(&[])
+        .iter()
+        .map(|x| {
+            let at = x.get("position").and_then(Value::as_u64).unwrap_or(0) as usize;
+            (at, text_of(x, "input"), text_of(x, "word"))
+        })
+        .collect();
+    let got: Vec<(usize, &str, &str)> = read
+        .corrected
+        .iter()
+        .map(|x| (x.position, x.input.as_str(), x.word))
+        .collect();
+    if read.unreadable != positions(expect.get("unreadable"))
+        || read.wrong != positions(expect.get("wrong"))
+        || got != corrected
+    {
+        return Err("other corrections".into());
+    }
+    if read.words != strings(expect.get("words").ok_or("no words")?)? {
+        return Err("other words".into());
+    }
+    if unhex(text_of(expect, "envelope")) != Some(read.envelope.clone()) {
+        return Err("another envelope".into());
+    }
+    let opened =
+        open(c, &read.envelope, text_of(entry, "passphrase")).map_err(|e| format!("{e:?}"))?;
+    let want = expected_item(expect.get("item").ok_or("no item")?)?;
+    if shown(&opened.item) != shown(&want) {
+        return Err("another item".into());
+    }
+    Ok(())
 }

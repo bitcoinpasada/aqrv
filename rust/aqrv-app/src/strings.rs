@@ -84,6 +84,21 @@ strings! {
     aqrv_size_29: "29 × 29 · 4-byte tag",
     /// A code size: the large one.
     aqrv_size_33: "33 × 33 · 8-byte tag",
+    /// A code size: the 37-byte one, which is words and a file only.
+    aqrv_size_words: "36 words · no QR code · 4-byte tag",
+    /// A made code without a QR code: its form and length. `{}`: the
+    /// number of words, then of bytes.
+    aqrv_words_label: "{} words · {} bytes",
+    /// A made code's words heading.
+    aqrv_words: "Words",
+    /// One word of a list. `{}`: its number from 1, then the word.
+    aqrv_word_numbered: "{}. {}",
+    /// The button that puts the words on the clipboard.
+    aqrv_copy_words: "Copy words",
+    /// The words are on the clipboard.
+    aqrv_words_copied: "Words copied",
+    /// The words could not be put on the clipboard.
+    aqrv_words_not_copied: "The words could not be copied",
     /// Make, the settings: the memory heading.
     aqrv_settings_memory: "Memory",
     /// A memory step's row. `{}`: the memory, then the time.
@@ -158,6 +173,31 @@ strings! {
     aqrv_open_path: "File path",
     /// Open: the button that reads the file at the path.
     aqrv_open_file: "Open a file",
+    /// Open: the words field's label.
+    aqrv_open_words: "Words",
+    /// Open: the button that reads the typed or pasted words.
+    aqrv_read_words: "Read words",
+    /// Open: the button that puts the clipboard's text in the field.
+    aqrv_paste: "Paste",
+    /// Open: the clipboard had no text.
+    aqrv_nothing_to_paste: "Nothing to paste",
+    /// Open: how many words were read. `{}`: the number.
+    aqrv_words_read: "{} words read",
+    /// Open: a word filled or changed. `{}`: its number, what was typed,
+    /// the word put there.
+    aqrv_word_filled: "Word {}: {} filled with {}",
+    /// See `aqrv_word_filled`.
+    aqrv_word_changed: "Word {}: {} changed to {}",
+    /// Open: corrections were made.
+    aqrv_compare_sheet: "Compare these words with the sheet",
+    /// Open: the words fail their check, so no passphrase is asked for.
+    aqrv_words_do_not_check: "The words do not check",
+    /// Open: not a number of words a code has. `{}`: the number read.
+    aqrv_words_count: "{} words read; a code has 36, 48 or 56",
+    /// Open: words that check but that no writer makes.
+    aqrv_not_aqrv_words: "Not Argon QR Vault words",
+    /// Open: words run together read more than one way.
+    aqrv_words_ambiguous: "The words read more than one way; separate them with spaces",
     /// Open: the file is being read.
     aqrv_reading: "Reading the file",
     /// Open: the file could not be read.

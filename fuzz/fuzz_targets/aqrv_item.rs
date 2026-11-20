@@ -12,7 +12,7 @@
 use aqrv::{Item, Kind, Size, fuzz_read};
 use libfuzzer_sys::fuzz_target;
 
-const SIZES: [Size; 3] = [Size::Tiny, Size::Small, Size::Large];
+const SIZES: [Size; 4] = [Size::Tiny, Size::Words, Size::Small, Size::Large];
 
 fuzz_target!(|data: &[u8]| {
     let [kind, size, rest @ ..] = data else { return };

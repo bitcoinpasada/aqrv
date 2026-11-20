@@ -53,7 +53,7 @@ fn a_sample_and_a_passphrase_make_a_code_the_library_opens() {
 
     assert_eq!(app.state().page, Page::Code);
     let made = app.state().made.as_ref().expect("a code was made");
-    assert_eq!(made.matrix.size(), 29);
+    assert_eq!(made.matrix.as_ref().unwrap().size(), 29);
     assert_eq!(
         made.label,
         "Version 3 · 29 × 29 · Level L · Byte · 53 bytes"

@@ -1,7 +1,9 @@
 //! The Argon QR Vault's format: seal and open (`https://github.com/bitcoinpasada/aqrv`, `AQRV.md`).
 //!
-//! One small secret under a passphrase, in 32, 53 or 62 bytes (§3). [`seal`]
-//! writes an envelope (§6 Writing), [`open`] reads one (§6 Reading),
+//! One small secret under a passphrase, in 32, 37, 53 or 62 bytes (§3,
+//! §3.2). [`seal`] writes an envelope (§6 Writing), [`open`] reads one (§6
+//! Reading), [`to_words`] and [`from_words`] write and read an envelope as
+//! words (§3.2), [`read_text`] reads words pasted or typed as free text,
 //! [`recognise_code`] and [`recognise_file`] say from the bytes alone whether
 //! a QR payload or a file is one (§9, §9.1), and
 //! [`workings`] gives every intermediate value of §6 for the test vectors.
@@ -17,6 +19,7 @@ mod codex32;
 mod envelope;
 mod item;
 mod text;
+mod words;
 
 #[cfg(feature = "fuzzing")]
 #[doc(hidden)]
@@ -27,14 +30,22 @@ pub use item::Item;
 #[doc(hidden)]
 pub use item::fuzz_read;
 pub use text::{NotText, from_text, to_text};
+pub use words::{
+    Correction, NoWords, NotAqrvWords, NotTextWords, NotWords, ReadWords, WORD_LIST, from_words,
+    read_text, to_words,
+};
 
-/// The three sizes (§3), told apart by the envelope's total length.
+/// The four sizes (§3, §3.2), told apart by the envelope's total length.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Size {
     /// 32 bytes: a 25 x 25 code, an 11-byte salt, a 4-byte tag, a room of
     /// 16, and only the kinds 0x10, 0x40 and 0x41. In a QR code it is
     /// text ([`to_text`], [`from_text`]).
     Tiny,
+    /// 37 bytes: words only (§3.2) and a `.aqrv` file, never a QR code; a
+    /// 16-byte salt, and otherwise as the 32-byte size: a 4-byte tag, a
+    /// room of 16, and only the kinds 0x10, 0x40 and 0x41.
+    Words,
     /// 53 bytes: a 29 x 29 code, a 4-byte tag, a room of 32.
     Small,
     /// 62 bytes: a 33 x 33 code, an 8-byte tag, a room of 37.
@@ -46,6 +57,7 @@ impl Size {
     pub const fn bytes(self) -> usize {
         match self {
             Size::Tiny => 32,
+            Size::Words => 37,
             Size::Small => 53,
             Size::Large => 62,
         }
@@ -54,7 +66,7 @@ impl Size {
     /// The room: the length of `C` and of `P` (§3).
     pub const fn room(self) -> usize {
         match self {
-            Size::Tiny => 16,
+            Size::Tiny | Size::Words => 16,
             Size::Small => 32,
             Size::Large => 37,
         }
@@ -63,7 +75,7 @@ impl Size {
     /// The tag's length, `t` in §6.
     pub const fn tag_len(self) -> usize {
         match self {
-            Size::Tiny | Size::Small => 4,
+            Size::Tiny | Size::Words | Size::Small => 4,
             Size::Large => 8,
         }
     }
@@ -72,14 +84,16 @@ impl Size {
     pub const fn salt_len(self) -> usize {
         match self {
             Size::Tiny => 11,
-            Size::Small | Size::Large => 16,
+            Size::Words | Size::Small | Size::Large => 16,
         }
     }
 
-    /// Whether the size holds `kind` (§3): the smallest holds three.
+    /// Whether the size holds `kind` (§3): the 32- and 37-byte sizes hold three.
     pub const fn holds(self, kind: Kind) -> bool {
         match self {
-            Size::Tiny => matches!(kind, Kind::Words12 | Kind::Passphrase | Kind::Note),
+            Size::Tiny | Size::Words => {
+                matches!(kind, Kind::Words12 | Kind::Passphrase | Kind::Note)
+            }
             Size::Small | Size::Large => true,
         }
     }
@@ -88,6 +102,7 @@ impl Size {
     pub fn of_len(n: usize) -> Option<Size> {
         match n {
             32 => Some(Size::Tiny),
+            37 => Some(Size::Words),
             53 => Some(Size::Small),
             62 => Some(Size::Large),
             _ => None,
@@ -200,8 +215,8 @@ pub struct Header {
     pub step: Step,
 }
 
-/// The check both of §9's rules end in: an envelope's bytes are 32, 53 or
-/// 62 bytes long and the first is 0xF8 to 0xFC. Only the tag proves a match.
+/// The check both of §9's rules end in: an envelope's bytes are 32, 37, 53
+/// or 62 bytes long and the first is 0xF8 to 0xFC. Only the tag proves a match.
 /// It does not say where the bytes came from: a QR payload is
 /// [`recognise_code`], a file [`recognise_file`].
 pub fn recognise(bytes: &[u8]) -> Option<Header> {
@@ -213,10 +228,11 @@ pub fn recognise(bytes: &[u8]) -> Option<Header> {
 /// §9: the envelope a QR code's payload stands for. A payload of 53 or 62
 /// bytes of binary is one when its first byte is 0xF8 to 0xFC; a payload of
 /// 47 characters of text is one when [`from_text`] reads it and the first of
-/// its 32 bytes is 0xF8 to 0xFC. Anything else is not, 32 bytes of binary
-/// whatever their first byte included.
+/// its 32 bytes is 0xF8 to 0xFC. Anything else is not, 32 or 37 bytes of
+/// binary whatever their first byte included: the 37-byte size is never a
+/// QR code.
 pub fn recognise_code(payload: &[u8]) -> Option<Vec<u8>> {
-    if payload.len() != 32 && recognise(payload).is_some() {
+    if !matches!(payload.len(), 32 | 37) && recognise(payload).is_some() {
         return Some(payload.to_vec());
     }
     let bytes = from_text(std::str::from_utf8(payload).ok()?).ok()?;
@@ -224,7 +240,7 @@ pub fn recognise_code(payload: &[u8]) -> Option<Vec<u8>> {
 }
 
 /// §9.1: a `.aqrv` file holds the envelope's bytes and nothing else, so its
-/// bytes are one when they are 32, 53 or 62 long and the first is 0xF8 to
+/// bytes are one when they are 32, 37, 53 or 62 long and the first is 0xF8 to
 /// 0xFC. A file's text form is not read here.
 pub fn recognise_file(bytes: &[u8]) -> Option<Header> {
     recognise(bytes)
@@ -239,8 +255,8 @@ pub enum Refused {
     EmptyText,
     /// The text is longer than the size has room for (§3).
     TooLong,
-    /// An item of a kind the size does not hold (§3): at 32 bytes, every
-    /// kind but a 12-word seed, a passphrase and a note.
+    /// An item of a kind the size does not hold (§3): at 32 and 37 bytes,
+    /// every kind but a 12-word seed, a passphrase and a note.
     KindNotHeld,
     /// Entropy of a length no BIP-39 word count has (§3).
     EntropyLength,

@@ -95,6 +95,39 @@ pub fn save(dir: &Path, hint: &str, bytes: &[u8]) -> Option<PathBuf> {
     None
 }
 
+/// Puts `text` on the system clipboard with the system's own tool:
+/// `clip` on Windows; `wl-copy`, then `xclip`, then `xsel` elsewhere.
+/// Returns whether one took it.
+pub fn copy(text: &str) -> bool {
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+    let tools: &[(&str, &[&str])] = if cfg!(windows) {
+        &[("clip", &[])]
+    } else {
+        &[
+            ("wl-copy", &[]),
+            ("xclip", &["-selection", "clipboard", "-in"]),
+            ("xsel", &["--clipboard", "--input"]),
+        ]
+    };
+    tools.iter().any(|(program, args)| {
+        let Ok(mut child) = Command::new(program)
+            .args(*args)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+        else {
+            return false;
+        };
+        let wrote = child
+            .stdin
+            .take()
+            .is_some_and(|mut stdin| stdin.write_all(text.as_bytes()).is_ok());
+        child.wait().is_ok_and(|s| s.success()) && wrote
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

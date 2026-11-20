@@ -221,6 +221,7 @@ fn item(ui: U, st: &State, (x, y0, w): (f32, f32, f32)) -> f32 {
 fn size_label(s: Size) -> &'static str {
     match s {
         Size::Tiny => EN.aqrv_size_25,
+        Size::Words => EN.aqrv_size_words,
         Size::Small => EN.aqrv_size_29,
         Size::Large => EN.aqrv_size_33,
     }
@@ -356,21 +357,23 @@ fn code(ui: U, st: &State, (x, y0, w): (f32, f32, f32)) -> f32 {
     let Some(made) = st.made.as_ref() else {
         return y;
     };
-    let n = made.matrix.size();
-    let side = w.min(QR_MAX);
-    let m = (side / (n + 8) as f32).floor().max(1.0);
-    let full = m * (n + 8) as f32;
-    let qx = x + (w - full) / 2.0;
-    ui.fill(qx, y, full, full, 0.0, Color::WHITE);
-    for row in 0..n {
-        for col in 0..n {
-            if made.matrix.module(col, row) {
-                let mx = qx + (col + 4) as f32 * m;
-                ui.fill(mx, y + (row + 4) as f32 * m, m, m, 0.0, Color::BLACK);
+    if let Some(matrix) = made.matrix.as_ref() {
+        let n = matrix.size();
+        let side = w.min(QR_MAX);
+        let m = (side / (n + 8) as f32).floor().max(1.0);
+        let full = m * (n + 8) as f32;
+        let qx = x + (w - full) / 2.0;
+        ui.fill(qx, y, full, full, 0.0, Color::WHITE);
+        for row in 0..n {
+            for col in 0..n {
+                if matrix.module(col, row) {
+                    let mx = qx + (col + 4) as f32 * m;
+                    ui.fill(mx, y + (row + 4) as f32 * m, m, m, 0.0, Color::BLACK);
+                }
             }
         }
+        y += full + GAP;
     }
-    y += full + GAP;
     y += ui.wrap_as((x, y, w), BODY_M, Role::OnSurfaceVariant, &made.label) + GAP;
     for (label, value) in &made.lines {
         y += pair(ui, (x, y, w), item_label(*label), value);
@@ -401,13 +404,25 @@ fn code(ui: U, st: &State, (x, y0, w): (f32, f32, f32)) -> f32 {
         }
         y += GAP;
     }
-    y += button(
-        ui,
-        (x, y, w),
-        EN.aqrv_save_picture,
-        Style::Primary,
-        Action::SavePicture,
-    );
+    if !made.words.is_empty() {
+        y += words_grid(ui, (x, y, w), &made.words);
+        y += button(
+            ui,
+            (x, y, w),
+            EN.aqrv_copy_words,
+            Style::Secondary,
+            Action::CopyWords,
+        );
+    }
+    if made.png.is_some() {
+        y += button(
+            ui,
+            (x, y, w),
+            EN.aqrv_save_picture,
+            Style::Primary,
+            Action::SavePicture,
+        );
+    }
     y += button(
         ui,
         (x, y, w),
@@ -431,6 +446,45 @@ fn code(ui: U, st: &State, (x, y0, w): (f32, f32, f32)) -> f32 {
     );
     y += button(ui, (x, y, w), EN.aqrv_about, Style::Ghost, Action::About);
     y - GAP
+}
+
+/// A code's words under their heading, numbered from 1, four to a row.
+/// Returns the height with the gap under it.
+fn words_grid(ui: U, (x, y0, w): (f32, f32, f32), words: &[&str]) -> f32 {
+    let mut y = y0;
+    ui.text_as(x, y, TITLE_S, Role::OnSurfaceVariant, EN.aqrv_words);
+    y += ui.line_as(TITLE_S) + GAP_SMALL;
+    let col = w / 4.0;
+    for (r, row) in words.chunks(4).enumerate() {
+        for (k, word) in row.iter().enumerate() {
+            let n = Text::num((r * 4 + k + 1) as u64);
+            let cell = Text::fill(EN.aqrv_word_numbered, &[&n, *word]);
+            ui.text_as(x + k as f32 * col, y, BODY_L, Role::OnSurface, &cell);
+        }
+        y += ui.line_as(BODY_L) + GAP_SMALL;
+    }
+    y + GAP - y0
+}
+
+/// Open's words as read: how many, and every position filled or changed.
+fn words_read(ui: U, (x, y0, w): (f32, f32, f32), read: &aqrv::ReadWords) -> f32 {
+    let mut y = y0;
+    let count = Text::fill(EN.aqrv_words_read, &[&Text::num(read.words.len() as u64)]);
+    y += ui.wrap_as((x, y, w), BODY_L, Role::OnSurface, &count) + GAP_SMALL;
+    for c in &read.corrected {
+        let template = if read.unreadable.contains(&c.position) {
+            EN.aqrv_word_filled
+        } else {
+            EN.aqrv_word_changed
+        };
+        let n = Text::num(c.position as u64);
+        let line = Text::fill(template, &[&n, &c.input, c.word]);
+        y += ui.wrap_as((x, y, w), BODY_L, Role::Error, &line) + GAP_SMALL;
+    }
+    if !read.corrected.is_empty() {
+        y += ui.wrap_as((x, y, w), BODY_M, Role::OnSurface, EN.aqrv_compare_sheet) + GAP_SMALL;
+    }
+    y + GAP - y0
 }
 
 fn item_label(l: Label) -> &'static str {
@@ -461,6 +515,42 @@ fn pair(ui: U, (x, y, w): (f32, f32, f32), label: &str, value: &str) -> f32 {
 
 /// Open (Material 3 Text field, Buttons, Lists): the path, then what
 /// came of the file, the passphrase and the item.
+/// Open's words field with Paste and Read words. Returns the height with
+/// the gap under it.
+fn words_input(ui: U, st: &State, (x, y0, w): (f32, f32, f32)) -> f32 {
+    let o = &st.open;
+    let mut y = y0;
+    // The words, line breaks shown as spaces; the field keeps them.
+    let shown_words: Text = o
+        .words
+        .chars()
+        .map(|c| if c.is_whitespace() { ' ' } else { c })
+        .collect();
+    y += field(
+        ui,
+        (x, y, w),
+        EN.aqrv_open_words,
+        &shown_words,
+        false,
+        st.focus == Some(Field::Words),
+        Action::Field(Field::Words),
+    );
+    y += button(
+        ui,
+        (x, y, w),
+        EN.aqrv_paste,
+        Style::Secondary,
+        Action::Paste,
+    );
+    let style = if o.words.trim().is_empty() {
+        Style::PrimaryOff
+    } else {
+        Style::Primary
+    };
+    y += button(ui, (x, y, w), EN.aqrv_read_words, style, Action::ReadWords);
+    y - y0
+}
+
 fn open(ui: U, st: &State, (x, y0, w): (f32, f32, f32), phase: Option<f32>) -> f32 {
     let o = &st.open;
     let mut y = y0;
@@ -479,6 +569,7 @@ fn open(ui: U, st: &State, (x, y0, w): (f32, f32, f32), phase: Option<f32>) -> f
         Style::Primary
     };
     y += button(ui, (x, y, w), EN.aqrv_open_file, style, Action::ReadPath);
+    y += words_input(ui, st, (x, y, w));
     let error = |ui: U, y: f32, text: &str| ui.wrap_as((x, y, w), BODY_M, Role::Error, text) + GAP;
     match o.stage {
         OpenStage::Empty => {}
@@ -487,7 +578,14 @@ fn open(ui: U, st: &State, (x, y0, w): (f32, f32, f32), phase: Option<f32>) -> f
         }
         OpenStage::Unreadable => y += error(ui, y, EN.aqrv_file_unread),
         OpenStage::NotACode => y += error(ui, y, EN.aqrv_not_a_code),
+        OpenStage::NotWords => {
+            let note = o.words_note.as_deref().unwrap_or(EN.aqrv_not_aqrv_words);
+            y += error(ui, y, note);
+        }
         _ => {
+            if let Some(read) = o.read.as_ref() {
+                y += words_read(ui, (x, y, w), read);
+            }
             if let Some(h) = o.header {
                 y += ui.wrap_as((x, y, w), BODY_L, Role::OnSurface, size_label(h.size)) + GAP_SMALL;
                 let step = Text::fill(EN.aqrv_code_step, &[memory_label(h.step)]);

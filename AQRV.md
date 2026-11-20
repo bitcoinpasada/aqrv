@@ -2,7 +2,7 @@
 
 **Kind:** Spec
 **Status:** Draft for outside review. Own specification, not yet reviewed outside Faraday; its code here is the test vectors' two scripts; its Rust reference implementation, by Faraday's authors, is in [`rust/`](rust) in this repository (library, command line, desktop test app), and nothing is compiled into any app ([`docs/STANDARDS.md`](https://github.com/bitcoinpasada/faraday/blob/main/docs/STANDARDS.md) §0)
-**Open:** a KEF envelope from Krux's own tests among the vectors (§11), an outside second implementation, an outside cryptographic review of the construction and its 4-byte and 8-byte tags (§13), public comment, and whether Faraday ever offers it; the words form (§3.2) is in the vectors and not yet in the Rust reference implementation, and its check code and correction rule are unreviewed (§13)
+**Open:** a KEF envelope from Krux's own tests among the vectors (§11), an outside second implementation, an outside cryptographic review of the construction and its 4-byte and 8-byte tags (§13), public comment, and whether Faraday ever offers it; the words form's check code and correction rule (§3.2) are unreviewed (§13)
 
 The Argon QR Vault (AQRV) is a proposed open format for one small secret
 encrypted under a passphrase with Argon2id, small enough for a 29 × 29 QR
@@ -960,7 +960,7 @@ Forney), checks the generator against its roots and the three-symbol form agains
 SLIP-0039's `rs1024_polymod`, and agrees with every list of words; where `reedsolo` is
 installed, it decodes every list that needs correcting through that library too and requires the same result. It was written by Faraday's authors,
 so it is not the outside implementation this section and the **Open:** line ask for.
-The Rust library `aqrv`, the command line `aqrv-cli` and the desktop test app in [`rust/`](rust) are also by Faraday's authors; the library's tests read every case and the three pictures, and `aqrv vectors` runs them. They are not an outside implementation either.
+The Rust library `aqrv`, the command line `aqrv-cli` and the desktop test app in [`rust/`](rust) are also by Faraday's authors; the library's tests read every case, its words where it has them, every list of words and the three pictures, and `aqrv vectors` runs the cases and the lists of words. They are not an outside implementation either.
 
 A vector where two tags agree is not offered: finding one takes about 2^31
 Argon2id runs at the 32-byte size, 2^29 at the small size and 2^61 at the large one, so that branch of

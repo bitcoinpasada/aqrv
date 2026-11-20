@@ -135,8 +135,12 @@ pub enum Fail {
 pub struct Made {
     /// The envelope's bytes.
     pub bytes: Vec<u8>,
-    /// The QR code of those bytes, kept to draw from.
-    pub matrix: QrMatrix,
+    /// The QR code of those bytes, kept to draw from; none at 37 bytes,
+    /// which is words only (§3.2).
+    pub matrix: Option<QrMatrix>,
+    /// The envelope's words, data words then check words (§3.2); none at
+    /// 32 bytes.
+    pub words: Vec<&'static str>,
     /// The 47-character text form the 32-byte size's code holds (§3).
     pub text: Option<Text>,
     /// The item that was sealed, as lines to show, the same lines Open
@@ -149,8 +153,8 @@ pub struct Made {
     pub size: Size,
     /// The memory step.
     pub step: Step,
-    /// The code as a PNG picture.
-    pub png: Vec<u8>,
+    /// The code as a PNG picture, where it has a QR code.
+    pub png: Option<Vec<u8>>,
 }
 
 /// What the thread answers.
@@ -419,17 +423,29 @@ fn make(
         Ok(b) if size == Size::Tiny => Some(aqrv::to_text(b)),
         _ => None,
     };
+    let words = aqrv::to_words(&bytes).unwrap_or_default();
     let matrix = match (&text, size) {
-        (Some(t), _) => encode(c, Payload::Alphanumeric(t.as_bytes()), Ecc::Low),
-        (None, Size::Large) => encode(c, Payload::Bytes(&bytes), Ecc::Medium),
-        (None, _) => encode(c, Payload::Bytes(&bytes), Ecc::Low),
+        (_, Size::Words) => None,
+        (Some(t), _) => Some(encode(c, Payload::Alphanumeric(t.as_bytes()), Ecc::Low)),
+        (None, Size::Large) => Some(encode(c, Payload::Bytes(&bytes), Ecc::Medium)),
+        (None, _) => Some(encode(c, Payload::Bytes(&bytes), Ecc::Low)),
     }
+    .transpose()
     .map_err(|_| Fail::Refused)?;
-    let label = code_label(&matrix, text.is_some(), bytes.len());
-    let png = picture(&matrix).ok_or(Fail::Refused)?;
+    let (label, png) = match &matrix {
+        Some(m) => {
+            let png = picture(m).ok_or(Fail::Refused)?;
+            (code_label(m, text.is_some(), bytes.len()), Some(png))
+        }
+        None => {
+            let n = [Text::num(words.len() as u64), Text::num(bytes.len() as u64)];
+            (Text::fill(EN.aqrv_words_label, &[&n[0], &n[1]]), None)
+        }
+    };
     Ok(Made {
         bytes,
         matrix,
+        words,
         text,
         lines: lines(c, item),
         label,

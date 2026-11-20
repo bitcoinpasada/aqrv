@@ -192,6 +192,33 @@ impl ArgonQrVault {
         }
     }
 
+    /// What the actions of the words form do: read, paste and copy.
+    /// Returns whether `action` was one of them.
+    fn act_words(&mut self, action: Action) -> bool {
+        let st = &mut self.state;
+        match action {
+            Action::ReadWords => read_words(st),
+            Action::Paste => {
+                if st.focus.is_none() && st.tab == Tab::Open {
+                    st.focus = Some(Field::Words);
+                }
+                self.commands.push_back(Command::RequestClipboard {
+                    kind: FileKind::Any,
+                });
+            }
+            Action::CopyWords => {
+                if let Some(made) = st.made.as_ref().filter(|m| !m.words.is_empty()) {
+                    self.commands.push_back(Command::WriteClipboard {
+                        kind: FileKind::Any,
+                        text: numbered_words(&made.words),
+                    });
+                }
+            }
+            _ => return false,
+        }
+        true
+    }
+
     /// What the actions of Open, saving, the working and About do.
     /// Returns whether `action` was one of them.
     fn act_open(&mut self, action: Action) -> bool {
@@ -236,6 +263,9 @@ impl ArgonQrVault {
                 }
             }
             Action::OpenAnother => {
+                st.open.words = Text::new();
+                st.open.read = None;
+                st.open.words_note = None;
                 st.open.stage = OpenStage::Empty;
                 st.open.envelope = None;
                 st.open.header = None;
@@ -245,9 +275,11 @@ impl ArgonQrVault {
                 st.focus = Some(Field::Path);
             }
             Action::SavePicture | Action::SaveFile => {
-                if let Some(made) = st.made.as_ref() {
-                    let (kind, name, bytes) = if action == Action::SavePicture {
-                        (FileKind::Png, "argon-qr-vault.png", made.png.clone())
+                let picture = action == Action::SavePicture;
+                if let Some(made) = st.made.as_ref().filter(|m| !picture || m.png.is_some()) {
+                    let (kind, name, bytes) = if picture {
+                        let png = made.png.clone().unwrap_or_default();
+                        (FileKind::Png, "argon-qr-vault.png", png)
                     } else {
                         (FileKind::Any, "argon-qr-vault.aqrv", made.bytes.clone())
                     };
@@ -293,7 +325,7 @@ impl ArgonQrVault {
     }
 
     fn act(&mut self, action: Action) {
-        if self.act_open(action) {
+        if self.act_words(action) || self.act_open(action) {
             return;
         }
         let st = &mut self.state;
@@ -439,12 +471,15 @@ impl ArgonQrVault {
                 self.state.focus = match (self.state.page, self.state.focus) {
                     (Page::Settings, Some(Field::Pass)) => Some(Field::Again),
                     (Page::Settings, _) if self.state.tab == Tab::Make => Some(Field::Pass),
-                    (_, Some(Field::Path)) if self.state.tab == Tab::Open => Some(Field::OpenPass),
+                    (_, Some(Field::Path)) if self.state.tab == Tab::Open => Some(Field::Words),
+                    (_, Some(Field::Words)) if self.state.tab == Tab::Open => Some(Field::OpenPass),
                     _ => self.state.focus,
                 };
             }
+            Key::Paste => self.act(Action::Paste),
             Key::Enter if self.state.tab == Tab::Open => match self.state.focus {
                 Some(Field::OpenPass) => self.act(Action::Unlock),
+                Some(Field::Words) => self.act(Action::ReadWords),
                 _ => self.act(Action::ReadPath),
             },
             Key::Enter => match self.state.page {
@@ -529,6 +564,20 @@ impl App for ArgonQrVault {
                 self.saving = None;
                 self.state.snack = Some(Text::of(EN.aqrv_not_saved));
             }
+            Event::Clipboard { text, .. } => {
+                if let Some(field) = self.state.focused_text() {
+                    field.push_str(&text);
+                }
+            }
+            Event::ClipboardUnavailable { .. } => {
+                self.state.snack = Some(Text::of(EN.aqrv_nothing_to_paste));
+            }
+            Event::ClipboardWritten { .. } => {
+                self.state.snack = Some(Text::of(EN.aqrv_words_copied));
+            }
+            Event::ClipboardNotWritten { .. } => {
+                self.state.snack = Some(Text::of(EN.aqrv_words_not_copied));
+            }
             Event::Entropy(e) => {
                 if self.waiting.is_some() {
                     self.pool.extend_from_slice(&e.into_bytes());
@@ -556,6 +605,58 @@ impl App for ArgonQrVault {
                 height: 0,
                 rgba: &[],
             },
+        }
+    }
+}
+
+/// The words numbered from 1, four to a line: what Copy puts on the
+/// clipboard, and what Open reads back.
+pub fn numbered_words(words: &[&str]) -> Text {
+    let mut out = Text::new();
+    for (r, row) in words.chunks(4).enumerate() {
+        for (k, w) in row.iter().enumerate() {
+            if k > 0 {
+                out.push_str("  ");
+            }
+            let n = Text::num((r * 4 + k + 1) as u64);
+            out.push_str(&Text::fill(EN.aqrv_word_numbered, &[&n, *w]));
+        }
+        out.push('\n');
+    }
+    out
+}
+
+/// Open's words read as free text (`AQRV.md` §3.2): a code to ask the
+/// passphrase for, with what was filled or changed, or why not.
+fn read_words(st: &mut State) {
+    use aqrv::{NotAqrvWords, NotTextWords, NotWords};
+    let open = &mut st.open;
+    open.envelope = None;
+    open.header = None;
+    open.shown = None;
+    open.read = None;
+    open.pass = Text::new();
+    match aqrv::read_text(&open.words) {
+        Ok(read) => {
+            open.header = aqrv::recognise(&read.envelope);
+            open.envelope = Some(read.envelope.clone());
+            open.read = Some(read);
+            open.words_note = None;
+            open.stage = OpenStage::Asking;
+            st.focus = Some(Field::OpenPass);
+        }
+        Err(why) => {
+            open.words_note = Some(match why {
+                NotTextWords::Words(NotWords::DoNotCheck) => Text::of(EN.aqrv_words_do_not_check),
+                NotTextWords::Words(NotWords::NotAqrv(NotAqrvWords::Count(n))) => {
+                    Text::fill(EN.aqrv_words_count, &[&Text::num(n as u64)])
+                }
+                NotTextWords::Words(NotWords::NotAqrv(_)) => Text::of(EN.aqrv_not_aqrv_words),
+                NotTextWords::Ambiguous | NotTextWords::TooMany => {
+                    Text::of(EN.aqrv_words_ambiguous)
+                }
+            });
+            open.stage = OpenStage::NotWords;
         }
     }
 }

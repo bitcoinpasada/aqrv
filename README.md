@@ -31,9 +31,9 @@ specification asks for. They are for testing with test data only.
 
 | Crate | What it is |
 |---|---|
-| [`rust/aqrv`](rust/aqrv) | the library: the format and nothing else (seal and open) |
-| [`rust/aqrv-cli`](rust/aqrv-cli) | the command line, `aqrv` |
-| [`rust/aqrv-app`](rust/aqrv-app) | the app's screens, drawn with Faraday's UI crates, and its own strings table (`src/strings.rs`) |
+| [`rust/aqrv`](rust/aqrv) | the library: the format and nothing else (seal and open, at 32, 37, 53 and 62 bytes), the words form (§3.2: writing, reading with correction, and a reader of words pasted or typed as free text), and a copy of SLIP-0039's word list (`src/wordlist.txt`) |
+| [`rust/aqrv-cli`](rust/aqrv-cli) | the command line, `aqrv`: `make --words` prints a code's words, `open --words` reads them from a file, standard input or `--text` |
+| [`rust/aqrv-app`](rust/aqrv-app) | the app's screens, drawn with Faraday's UI crates, and its own strings table (`src/strings.rs`); a made code shows its words with Copy, and Open reads pasted or typed words |
 | [`rust/aqrv-desktop`](rust/aqrv-desktop) | the desktop program, `argon-qr-vault`, in a window |
 
 ### Faraday, and one commit of it
@@ -77,7 +77,7 @@ The fuzz workspace is its own (`fuzz/`, with the dated nightly in
 (`-dict=dict/aqrv_recognise.dict`); `fuzz/corpus/aqrv_*/` are the seeds, made
 from the vectors.
 
-The tests read this repository's own `vectors/aqrv.json`. `vectors/diff.py`
+The tests read this repository's own `vectors/aqrv.json`: every case, the words of each case that has them, and the 51 lists of words. `vectors/diff.py`
 runs the library and `check.py`'s second reader over many generated codes
 (`python3 -I -B vectors/diff.py --seed 1 --rounds 3`).
 
