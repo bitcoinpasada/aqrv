@@ -492,7 +492,8 @@ or U+FE20–U+FE2F.
    spaces and tabs, then a letter. The hyphen and everything after it up to
    that letter are removed, so that `aca-` at the end of one line and `demic`
    at the start of the next read `academic`. A CR without an LF is not a line
-   break here. The text is read once, from the start.
+   break here, and a mark before the hyphen (`e` and U+0301, then `-`) is not
+   a letter, so no join is made. The text is read once, from the start.
 3. Letters, marks and `?` make runs, and every other character separates
    them: every space and line break (CR LF included), digits, punctuation,
    the no-break space, the zero-width space, the byte order mark, bullets,
@@ -500,7 +501,8 @@ or U+FE20–U+FE2F.
    of `?`, or a longest stretch of letters and marks, so `acad?acid` is three
    runs. Separators in a row, and at the start or end, only separate.
 4. A number is a longest stretch of the ASCII digits 0 to 9, read in
-   decimal, leading zeros allowed (`01` is 1). A run's number is the last
+   decimal, leading zeros allowed (`01` is 1); full-width digits separate
+   but are not numbers. A run's number is the last
    number in the separators directly before it; a run with no separators
    before it, or none holding a number, has no number. If every run has a
    number and the numbers are 1 to n, each once, where n is the number of
@@ -514,15 +516,18 @@ or U+FE20–U+FE2F.
    ignored); a cut is one way of doing so. A run's cuts are ordered by the
    length of the first piece, longer first, then of the second, and so on.
    A run with more than 1024 cuts is too many. A run with no cut is one
-   position, which step 1 finds unreadable. Words run together are so read
+   position, which step 1 finds unreadable, since a run that named a word
+   would have that word as a cut of one piece. Words run together are so read
    apart, and a text whose words are set apart has step 1's list among its
    readings.
 6. A reading takes one cut of each run, in the runs' order; its pieces and
    unreadable runs are its positions. Readings are ordered by the first run's
    cut, then the second's, and so on. A reading of more than 56 positions is
-   dropped. More than 1024 readings left is too many.
+   dropped, and the limit counts only the readings left: more than 1024 of
+   them is too many. The run limit counts every cut.
 7. The readings of 36, 48 or 56 positions are kept. If none is kept, the
-   text is not AQRV words, and the count a reader gives (step 2) is that of
+   text is not AQRV words, and the count a reader gives (step 2), in which
+   every unreadable run is a position, is that of
    the first reading left, or, with none left, of the reading that takes each
    run's first cut. If a kept reading checks as it is, every position naming a
    word and the words valid, only those that do are read; otherwise every kept
@@ -531,7 +536,8 @@ or U+FE20–U+FE2F.
    them is not AQRV words by step 5, and otherwise they do not check. If
    every reading that gives an envelope gives the same one, and none read is
    not AQRV words, that is the envelope, with the filled and changed positions
-   of the reading that has fewest (the first in order when several have as
+   of the reading that has fewest, filled and changed counted together (the
+   first in order when several have as
    few); the reader shows them as step 4 says. Otherwise the text is
    ambiguous.
 
