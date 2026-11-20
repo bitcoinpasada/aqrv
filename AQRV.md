@@ -446,18 +446,22 @@ enough to name it, and a writer may say so.
    each compared without regard to case (`AcAd` names `academic`); any other
    character makes the position unreadable. A word given with more
    letters is that list word only if every letter given matches it and it
-   has no more letters than the word. A position with fewer than four
+   has no more letters than the word, so a position of more than eight
+   letters is unreadable. A position with fewer than four
    letters, or whose letters name no word in the list or match none in full,
    is unreadable; so is one a person or a scanner marks as
    unreadable. How a reader collects the words (typing with completion after
-   four letters, or a scan) is the reader's.
+   four letters, or a scan) is the reader's; a reader that takes them as text
+   cuts the text into positions as **Reading words from text** says.
 2. A list of other than 36, 48 or 56 positions is not AQRV words. A reader
    says how many it has and how many each size needs; it does not add or drop
    a word itself.
 3. If no position is unreadable and the words are valid, go to 5.
 4. Otherwise the reader may correct: it fills the f unreadable positions and
    finds and changes e wrong words by Reed–Solomon decoding, and accepts a
-   result only if 2e + f ≤ 4. A correction changes only written words, never
+   result only if 2e + f ≤ 4. An unreadable position is only ever filled:
+   whatever it held, it is never counted among the e wrong words. A
+   correction changes only written words, never
    the leading 1 or `cs`, and uses only the check: the unused bits are not
    taken as known. It shows every position it filled or changed
    and the word it put there, for the person to compare with the sheet, before
@@ -471,6 +475,75 @@ enough to name it, and a writer may say so.
    means the words do not check, since the correction is then more likely
    wrong than the sheet. Otherwise §6's reading follows, with the
    size's `N`.
+
+**Reading words from text.** A reader may take the words as text, pasted or
+typed in one piece, with or without numbers, across lines, by four letters or
+in full, set apart or run together. Typing with completion, a scan and what the
+screen shows stay the reader's; a reader that takes text cuts it into
+positions by these rules, so that every reader takes the same text the same
+way, and reads the positions by steps 2 to 5. The text is a string of Unicode
+characters. A letter is a character with Unicode's Alphabetic property; a mark
+is a character in U+0300–U+036F, U+1AB0–U+1AFF, U+1DC0–U+1DFF, U+20D0–U+20FF
+or U+FE20–U+FE2F.
+
+1. Text of more than 16384 bytes in UTF-8 is too many.
+2. A hyphen at a line break joins: a hyphen-minus (U+002D) directly after a
+   letter, then any spaces (U+0020) and tabs, then LF or CR LF, then any
+   spaces and tabs, then a letter. The hyphen and everything after it up to
+   that letter are removed, so that `aca-` at the end of one line and `demic`
+   at the start of the next read `academic`. A CR without an LF is not a line
+   break here. The text is read once, from the start.
+3. Letters, marks and `?` make runs, and every other character separates
+   them: every space and line break (CR LF included), digits, punctuation,
+   the no-break space, the zero-width space, the byte order mark, bullets,
+   dashes, curly quotes and full-width punctuation. A run is a longest stretch
+   of `?`, or a longest stretch of letters and marks, so `acad?acid` is three
+   runs. Separators in a row, and at the start or end, only separate.
+4. A number is a longest stretch of the ASCII digits 0 to 9, read in
+   decimal, leading zeros allowed (`01` is 1). A run's number is the last
+   number in the separators directly before it; a run with no separators
+   before it, or none holding a number, has no number. If every run has a
+   number and the numbers are 1 to n, each once, where n is the number of
+   runs, the runs are put in the order of their numbers, so that a grid
+   copied column by column reads in its numbered order. Otherwise the runs
+   stay in the text's order and the numbers only separate.
+5. A run of `?`, or one holding anything other than the ASCII letters `a` to
+   `z` and `A` to `Z` (a letter of another script, U+212A KELVIN SIGN, a
+   mark), is one unreadable position. A run of ASCII letters is cut into
+   pieces of 4 to 8 letters, each of which names a word by step 1 (so case is
+   ignored); a cut is one way of doing so. A run's cuts are ordered by the
+   length of the first piece, longer first, then of the second, and so on.
+   A run with more than 1024 cuts is too many. A run with no cut is one
+   position, which step 1 finds unreadable. Words run together are so read
+   apart, and a text whose words are set apart has step 1's list among its
+   readings.
+6. A reading takes one cut of each run, in the runs' order; its pieces and
+   unreadable runs are its positions. Readings are ordered by the first run's
+   cut, then the second's, and so on. A reading of more than 56 positions is
+   dropped. More than 1024 readings left is too many.
+7. The readings of 36, 48 or 56 positions are kept. If none is kept, the
+   text is not AQRV words, and the count a reader gives (step 2) is that of
+   the first reading left, or, with none left, of the reading that takes each
+   run's first cut. If a kept reading checks as it is, every position naming a
+   word and the words valid, only those that do are read; otherwise every kept
+   reading is read, with correction. Each is read by steps 2 to 5.
+8. If no reading gives an envelope, the words are not AQRV words when one of
+   them is not AQRV words by step 5, and otherwise they do not check. If
+   every reading that gives an envelope gives the same one, and none read is
+   not AQRV words, that is the envelope, with the filled and changed positions
+   of the reading that has fewest (the first in order when several have as
+   few); the reader shows them as step 4 says. Otherwise the text is
+   ambiguous.
+
+Too many and ambiguous are refused as the words not checking is: no
+passphrase is asked for, and the reader says which, and that the words are to
+be set apart. The limits are exact: a reader takes every text within them,
+and refuses as too many every text beyond them, so that no two readers differ.
+A heading pasted with the words (`AQRV words:`) is read as any other text and
+is never dropped: it adds positions, so the count or the check reports it. A
+reading that checks as it is comes before any that a correction brings to an
+envelope, since a correction can reach a wrong envelope (below) and a check
+that passes unchanged almost never does.
 
 **Why 2e + f ≤ 4.** Six check words can fix three wrong words or six
 unreadable ones, but a fix that uses every check word has none left to check
@@ -938,6 +1011,22 @@ and large sizes unless an item fits only one:
   reserved step); and words named by their first four letters, in upper
   case and in full, and by letters that match no word, and a word with U+212A
   KELVIN SIGN in place of its k, which is unreadable;
+- reading words from text (§3.2, `words_text`): the words of the three
+  step-0 cases at 36, 48 and 56 words as text, set apart by spaces, lines,
+  CR LF, tabs, commas, a JSON list, bullets, the no-break space, the
+  zero-width space, the byte order mark, en and em dashes, curly quotes and
+  full-width punctuation; numbered as `1 w`, `1. w`, `1) w`, `(1) w`,
+  `1: w`, `#1 w` and `01 w`, glued to the numbers, and in numbered rows of
+  four; by their first four letters set apart and run together, in full run
+  together, and in mixed lengths and case run together; a grid copied column
+  by column with its numbers, which reads in order, and numbers that are not
+  1 to n, which keep the text's order (from 2, which opens, and a grid
+  numbered from 0, which does not check); a hyphen at a line break, with LF
+  and with CR LF; `?` and `??`, `acad?acid`, an accent as a combining mark,
+  U+212A KELVIN SIGN and a word of nine letters, each one unreadable position
+  that is filled; a pasted heading, which is not AQRV words; a text that is
+  ambiguous, crafted from list words; and `advocate` 56 times run together
+  and text of 16385 bytes, which are too many, beside 16384 bytes, which opens;
 - the 32-byte size's text form (`qr_text`): one vector's 47 characters, which
   decode to its envelope and open, and texts that are not recognised: the
   value 256^32, 46 and 48 characters, a lower-case letter, a character outside

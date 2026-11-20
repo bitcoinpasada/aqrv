@@ -56,10 +56,10 @@ checks the vectors and is not meant to be used.
 
 ## A case
 
-`aqrv.json` has `parameters` (the steps, labels, sizes with each one's salt length and kinds, the kinds, the five
+`aqrv.json` has `parameters` (the steps, labels, sizes with each one's salt length and kinds, the kinds, the seven
 outcomes, and `words`: the word list and its SHA-256, the field, `a`, the generator, the customization string, the
-word counts and unused bits of each size and the correction rule), `cases`, `writer_refuses`, `qr`, `qr_text` and
-`words`. Every case has `name`, `group`,
+word counts and unused bits of each size and the correction rule, and `words_text`: the limits and marks of reading
+words from text), `cases`, `writer_refuses`, `qr`, `qr_text`, `words` and `words_text`. Every case has `name`, `group`,
 `size` (32, 37, 53 or 62), `passphrase`, `envelope` (hex) and `expect`. A case that
 opens also has:
 
@@ -92,6 +92,13 @@ and, for a list of words only:
 - `not_aqrv_words`: other than 36, 48 or 56 words, or words that check whose
   unused bits are not 0 or whose step is not defined; no passphrase is asked for.
 
+and, for words read from text only:
+
+- `ambiguous`: readings of the text give different envelopes, or one gives an
+  envelope and another is not AQRV words; no passphrase is asked for;
+- `too_many`: text over 16384 bytes, a run with more than 1024 cuts, or more
+  than 1024 readings; no passphrase is asked for.
+
 Each entry of the top-level `words` list has `name`, `group`, `input` (one string
 a position, `?` for a position marked unreadable), `expect`, and, where they
 apply, `size`, `source` (the case whose envelope it is made from), `passphrase`
@@ -102,6 +109,15 @@ list), `envelope`, `kind` and `item`. One that does not check expects `reason`
 and `decodes_without_the_rule`, whether a decoder allowed `2e + f <= 6` would
 find valid words (computed by such a run, not written by hand); one that is not
 AQRV words expects `reason`.
+
+Each entry of the top-level `words_text` list (§3.2, reading words from text)
+has `name`, `group` (`words-text`), `source` (the case whose envelope it is
+made from), `passphrase`, `text` (the whole text, as pasted) and `expect`. One
+that opens expects what an entry of `words` expects, its `corrected` inputs as
+the text gives them (`??`, a word with a combining mark); any other expects
+`outcome` and `reason`, in words. `gen.py` reads every text by its own reader,
+written from §3.2, and stops if one differs. `check.py` does not read
+`words_text` yet.
 
 ## Groups
 
@@ -120,6 +136,7 @@ AQRV words expects `reason`.
 | `words-do-not-check` (in `words`) | at each size: one unreadable and two wrong words, five unreadable, three wrong (each of which would decode without the rule) and seven unreadable (which would not); and, at 48 words, the lists of step 5 and of a set unused bit below with one other word changed, which a correction restores to that list, so after a correction they do not check |
 | `words-not-aqrv` (in `words`) | 35 and 37 words, 49 words; the last data word's lowest unused bit set, at 36 and 48 words, and step 5 at 48 words, each with check words made over it so that it checks |
 | `words-naming` (in `words`) | every word by its first four letters, in upper case at lengths from four letters to whole, and in full; and one position each with a wrong fifth letter, a letter added, four letters that begin no word, and a word with U+212A KELVIN SIGN in place of its k (not an ASCII letter), each unreadable and filled by the check |
+| `words-text` (in `words_text`) | the words of `step-0-12w-37`, `step-0-24w-53` and `step-0-24w-62` as text: every kind of separator §3.2 names, seven numbering styles, numbers glued to the words and rows of four, a grid copied column by column, first four letters and whole words run together, a hyphen at a line break, unreadable runs that are filled (`?`, `??`, `acad?acid`, a combining accent, U+212A, nine letters), a pasted heading (not AQRV words), numbers that are not 1 to n (kept in text order: one opens, one does not check), an ambiguous text crafted from list words, and too many (`advocate` 56 times run together, 16385 bytes, beside 16384 bytes, which opens) |
 | `qr_text` (its own list) | the 32-byte size's text form (`AQRV.md` §3, §9), each with `text` and `expect`: the step 0 case's 47 characters, which decode to its envelope and open; and, not recognised, each with its reason: the value 256^32 written out, the text with its last character removed (46) and with a `0` before it (48), its first letter in lower case, a `#` in place of its 21st character, and the KEF version 5 envelope above as Krux's base43 text, which decodes to 32 bytes starting 0x41 |
 | `not-recognised` | KEF version 20 envelopes, built by `gen.py` from [`docs/KEF.md`](https://github.com/bitcoinpasada/faraday/blob/main/docs/KEF.md) §3 and §4: 53 bytes with an empty id and 62 bytes with a 9-byte id. Each is real: PBKDF2-HMAC-SHA-256 at 100,000 iterations, AES-256-GCM, a 12-byte IV, the tag cut to 4 bytes. The case lists the passphrase and plaintext |
 

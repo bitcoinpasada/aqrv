@@ -21,6 +21,7 @@ import hmac
 import itertools
 import json
 import os
+import re
 import struct
 import sys
 import time
@@ -492,6 +493,204 @@ def read_words(given, passphrase, bound=WORDS_BOUND):
     env, why = envelope_of_words(values)
     if env is None:  # after a correction, bad unused bits or a reserved step mean the correction is suspect
         return {"outcome": "words_do_not_check" if unreadable or wrong else "not_aqrv_words", "why": why}
+    got = read(env, passphrase)
+    if got["outcome"] != "opens":
+        return {"outcome": got["outcome"]}
+    changed = sorted(unreadable + wrong)
+    return {"outcome": "opens", "unreadable": [k + 1 for k in unreadable], "wrong": [k + 1 for k in wrong],
+            "corrected": [{"position": k + 1, "input": given[k], "word": WORDS[values[k]]} for k in changed],
+            "words": [WORDS[v] for v in values], "envelope": hx(env), "kind": kh(got["kind"]),
+            "item": got["item"]}
+
+
+# ------------------------------------------------------------ words from text (§3.2, reading words from text)
+
+TEXT_MAX_BYTES = 16 * 1024  # text longer than this, in UTF-8 bytes, is too many
+TEXT_MAX_CUTS = 1024  # a run with more cuts than this is too many
+TEXT_MAX_READINGS = 1024  # more readings than this is too many
+TEXT_MAX_POSITIONS = 56  # a reading with more positions is dropped
+MARK_RANGES = ((0x0300, 0x036F), (0x1AB0, 0x1AFF), (0x1DC0, 0x1DFF), (0x20D0, 0x20FF), (0xFE20, 0xFE2F))
+TEXT_SIZES = (36, 48, 56)
+
+
+def _mark(c):
+    return any(a <= ord(c) <= b for a, b in MARK_RANGES)
+
+
+def _letter(c):
+    """Unicode's Alphabetic property, as far as the vectors need it: the letter categories and Nl.
+    Alphabetic also holds some marks and symbols (Other_Alphabetic); _text_chars_ok keeps those out
+    of the vectors' texts, so this test and the property agree on every character used."""
+    return c.isalpha() or unicodedata.category(c) == "Nl"
+
+
+def _text_chars_ok(text):
+    for c in text:
+        if ord(c) >= 0x80:
+            assert unicodedata.category(c)[0] in "LNPZC" or _mark(c), "U+%04X" % ord(c)
+
+
+class _TooMany(Exception):
+    pass
+
+
+def _join_wraps(t):
+    """A hyphen after a letter, spaces or tabs, LF or CR LF, spaces or tabs, then a letter: the
+    hyphen and everything up to that letter go."""
+    out = []
+    i, n = 0, len(t)
+    while i < n:
+        if t[i] == "-" and i > 0 and _letter(t[i - 1]):
+            j = i + 1
+            while j < n and t[j] in " \t":
+                j += 1
+            if t[j:j + 2] == "\r\n":
+                j += 1
+            if j < n and t[j] == "\n":
+                j += 1
+                while j < n and t[j] in " \t":
+                    j += 1
+                if j < n and _letter(t[j]):
+                    i = j
+                    continue
+        out.append(t[i])
+        i += 1
+    return "".join(out)
+
+
+def _in_run(c):
+    return c == "?" or _letter(c) or _mark(c)
+
+
+def _runs(t):
+    """The runs in text order, each as (the last number in the separators just before it, or None; its text)."""
+    out = []
+    number = None
+    i, n = 0, len(t)
+    while i < n:
+        j = i
+        if t[i] == "?":
+            while j < n and t[j] == "?":
+                j += 1
+        elif _in_run(t[i]):
+            while j < n and _in_run(t[j]) and t[j] != "?":
+                j += 1
+        else:
+            while j < n and not _in_run(t[j]):
+                j += 1
+            nums = re.findall("[0-9]+", t[i:j])
+            number = int(nums[-1]) if nums else None
+            i = j
+            continue
+        out.append((number, t[i:j]))
+        number = None
+        i = j
+    return out
+
+
+def _ordered(runs):
+    nums = [k for k, _ in runs]
+    if runs and None not in nums and sorted(nums) == list(range(1, len(runs) + 1)):
+        return [r for _, r in sorted(runs)]
+    return [r for _, r in runs]
+
+
+def _cuts(run):
+    """Every way to cut a run of ASCII letters into pieces of 4 to 8 letters that each name a word,
+    a longer first piece first, then a longer second; raises _TooMany past TEXT_MAX_CUTS."""
+    n = len(run)
+    nxt = [[k for k in range(8, 3, -1) if i + k <= n and name_word(run[i:i + k]) is not None] for i in range(n)]
+    ways = [0] * (n + 1)
+    ways[n] = 1
+    for i in range(n - 1, -1, -1):
+        ways[i] = sum(ways[i + k] for k in nxt[i])
+    if ways[0] > TEXT_MAX_CUTS:
+        raise _TooMany
+    out = []
+    stack = [(0, [])]
+    while stack:
+        i, path = stack.pop()
+        if i == n:
+            out.append(path)
+            continue
+        for k in reversed([k for k in nxt[i] if ways[i + k]]):  # pushed shortest first, so the longest comes off first
+            stack.append((i + k, path + [run[i:i + k]]))
+    assert len(out) == ways[0]
+    return out
+
+
+def _readings(choices):
+    """Every reading of at most TEXT_MAX_POSITIONS positions, in order; raises _TooMany past TEXT_MAX_READINGS."""
+    fewest = [0] * (len(choices) + 1)
+    for r in range(len(choices) - 1, -1, -1):
+        fewest[r] = fewest[r + 1] + min(len(c) for c in choices[r])
+    out = []
+    stack = [(0, [])]
+    while stack:
+        r, path = stack.pop()
+        if r == len(choices):
+            if len(out) == TEXT_MAX_READINGS:
+                raise _TooMany
+            out.append(path)
+            continue
+        for cut in reversed(choices[r]):
+            if len(path) + len(cut) + fewest[r + 1] <= TEXT_MAX_POSITIONS:
+                stack.append((r + 1, path + cut))
+    return out
+
+
+def decode_words(given):
+    """§3.2 reading, steps 2 to 5, without §6: ("envelope", env, values, unreadable, wrong),
+    or ("not_aqrv_words", why) or ("words_do_not_check", why)."""
+    if len(given) not in TEXT_SIZES:
+        return ("not_aqrv_words", "%d positions" % len(given))
+    named = [name_word(s) for s in given]
+    unreadable = [k for k, v in enumerate(named) if v is None]
+    fixed = correct(named, unreadable)
+    if fixed is None:
+        return ("words_do_not_check", "no correction with 2e + f <= 4")
+    values, wrong = fixed
+    env, why = envelope_of_words(values)
+    if env is None:
+        return ("words_do_not_check" if unreadable or wrong else "not_aqrv_words", why)
+    return ("envelope", env, values, unreadable, wrong)
+
+
+def text_readings(text):
+    """The text's runs' cuts and its readings, each a list of positions as given; raises _TooMany."""
+    if len(text.encode("utf-8")) > TEXT_MAX_BYTES:
+        raise _TooMany
+    choices = []
+    for run in _ordered(_runs(_join_wraps(text))):
+        cuts = _cuts(run) if run.isascii() and run.isalpha() else []
+        choices.append(cuts or [[run]])
+    return choices, _readings(choices)
+
+
+def read_words_text(text, passphrase):
+    """§3.2, reading words from text, then §6. The answer has the shape of a words_text entry's expect."""
+    try:
+        choices, readings = text_readings(text)
+    except _TooMany:
+        return {"outcome": "too_many"}
+    counted = [r for r in readings if len(r) in TEXT_SIZES]
+    if not counted:
+        first = readings[0] if readings else [p for c in choices for p in c[0]]
+        return {"outcome": "not_aqrv_words", "reason": "%d positions" % len(first)}
+    named = [[name_word(p) for p in r] for r in counted]
+    exact = [r for r, v in zip(counted, named) if None not in v and words_valid(v)]
+    found, refused = [], []
+    for r in exact or counted:
+        got = decode_words(r)
+        if got[0] == "envelope":
+            found.append((len(got[3]) + len(got[4]), r, got))
+        elif got[0] == "not_aqrv_words":
+            refused.append(got[1])
+    if found and (refused or len({g[1] for _, _, g in found}) > 1):
+        return {"outcome": "ambiguous"}
+    if not found:
+        return {"outcome": "not_aqrv_words", "reason": refused[-1]} if refused else {"outcome": "words_do_not_check"}
+    _, given, (_, env, values, unreadable, wrong) = min(found, key=lambda x: x[0])
     got = read(env, passphrase)
     if got["outcome"] != "opens":
         return {"outcome": got["outcome"]}
@@ -996,6 +1195,226 @@ def build_words(bases):
     return out
 
 
+def _cut_pool():
+    """Runs of two list words, the first by 4 letters or more and the second by 4 or more, that cut
+    exactly two ways, each into two pieces naming words: the same first word u, and v or another
+    word z second. Keyed by v XOR z, the change the second reading makes at v's position; the
+    shortest run first."""
+    at = {}  # a substring of a word, from its fifth letter on -> (word, where it starts)
+    for ui, u in enumerate(WORDS):
+        for s in range(4, len(u)):
+            for j in range(1, 5):
+                if s + j <= len(u):
+                    at.setdefault(u[s:s + j], []).append((ui, s))
+    found = []
+    for vi, v in enumerate(WORDS):  # u's piece takes v's first j letters as well: u[:l + j] then v[j:k]
+        for j in range(1, len(v) - 3):
+            for k in range(j + 4, len(v) + 1):
+                zi = name_word(v[j:k])
+                if zi is not None and zi != vi:
+                    for ui, l in at.get(v[:j], []):
+                        found.append((WORDS[ui][:l] + v[:k], ui, l, vi, k, zi))
+    for zi, z in enumerate(WORDS):  # u's piece gives its last d letters to z: u[:l - d] then u[l - d:l] + v[:k]
+        for d in range(1, min(4, len(z) - 4) + 1):
+            vi = name_word(z[d:d + 4])
+            if vi is None or vi == zi:
+                continue
+            for k in range(4, min(len(z) - d, len(WORDS[vi])) + 1):
+                if WORDS[vi][:k] == z[d:d + k]:
+                    for ui, s in at.get(z[:d], []):
+                        found.append((WORDS[ui][:s + d] + WORDS[vi][:k], ui, s + d, vi, k, zi))
+    pool = {}
+    for run, ui, l, vi, k, zi in sorted(set(found), key=lambda f: (len(f[0]), f)):
+        if (vi ^ zi) in pool:
+            continue
+        cuts = _cuts(run)
+        if len(cuts) == 2 and [WORDS[ui][:l], WORDS[vi][:k]] in cuts and all(len(c) == 2 for c in cuts):
+            pool[vi ^ zi] = (run, ui, vi, zi)
+    return pool
+
+
+def _ambiguous(vals):
+    """A text with two readings that give two envelopes: three runs that each cut two ways, and four
+    positions unreadable in both. The first reading is the given words with three pairs changed; the
+    second differs from it at the three second words of those pairs and at the four unreadable ones,
+    a codeword of weight 7 apart, so each reading fills its four positions to an envelope of its own.
+    Returns (text, first words, second words, the unreadable positions)."""
+    m = len(vals)
+    k = m - WORDS_CHECK
+    pool = _cut_pool()
+    pairs = ((9, 10), (19, 20), (29, 30))  # (u, v) positions, away from the step's data word and the last
+    D = [b for _, b in pairs]
+    cols = _columns(m)
+    free = [p for p in range(1, m) if p != k - 1 and all(p not in pr for pr in pairs)]
+    for P in itertools.combinations(free, 4):
+        others = D[1:] + list(P)
+        x = _solve([cols[j] for j in others], cols[D[0]])  # c: 1 at D[0], x elsewhere, a codeword's difference
+        c = dict(zip(others, x))
+        c[D[0]] = 1
+        for s in sorted(pool):
+            ds = [gmul(s, c[b]) for b in D]
+            if not all(dl in pool for dl in ds):
+                continue
+            data = list(vals[:k])
+            runs = {}
+            for (a, b), dl in zip(pairs, ds):
+                run, ui, vi, zi = pool[dl]
+                data[a], data[b] = ui, vi
+                runs[a] = run
+            first = data + words_check(data)
+            second = list(first)
+            for p, cp in c.items():
+                second[p] ^= gmul(s, cp)
+            assert words_valid(first) and words_valid(second) and first != second
+            assert envelope_of_words(first)[0] and envelope_of_words(second)[0]
+            tokens, p = [], 0
+            while p < m:
+                if p in runs:
+                    tokens.append(runs[p])
+                    p += 2
+                    continue
+                tokens.append("?" if p in P else WORDS[first[p]])
+                p += 1
+            return " ".join(tokens), first, second, list(P)
+    raise AssertionError("no ambiguous text found")
+
+
+FULL_WIDTH_DIGITS = str.maketrans("0123456789", "０１２３４５６７８９")
+
+
+def build_words_text(bases):
+    """§3.2, reading words from text: the words_text entries. bases maps a size to
+    (envelope, passphrase, case name, case expect)."""
+    out = []
+    full_of = {}
+    for n in (37, 53, 62):
+        env, pp, src, exp = bases[n]
+        full_of[len(word_values(env))] = ([WORDS[v] for v in word_values(env)], env, pp, src, exp)
+
+    def opens(name, m, text, given=None, unreadable=()):
+        full, env, pp, src, exp = full_of[m]
+        given = given or full
+        assert len(given) == m
+        unr = sorted(unreadable)
+        out.append({"name": "text-%s-%d" % (name, m), "group": "words-text", "source": src, "passphrase": pp,
+                    "text": text,
+                    "expect": {"outcome": "opens", "unreadable": [i + 1 for i in unr], "wrong": [],
+                               "corrected": [{"position": i + 1, "input": given[i], "word": full[i]} for i in unr],
+                               "words": full, "envelope": hx(env), "kind": exp["kind"], "item": exp["item"]}})
+
+    def refused(name, m, text, outcome, reason, src=None):
+        full, env, pp, src0, exp = full_of[m]
+        out.append({"name": "text-%s-%d" % (name, m), "group": "words-text", "source": src or src0,
+                    "passphrase": pp, "text": text, "expect": {"outcome": outcome, "reason": reason}})
+
+    def numbered(fmt, words, sep="\n"):
+        return sep.join(fmt % (i + 1, w) for i, w in enumerate(words)) + sep
+
+    W = {m: full_of[m][0] for m in full_of}
+    f4 = {m: [w[:4] for w in W[m]] for m in W}
+
+    # Separators.
+    for m in (36, 48, 56):
+        opens("spaces", m, " ".join(W[m]))
+        opens("lines", m, "\n".join(W[m]) + "\n")
+    opens("crlf", 48, "\r\n".join(W[48]) + "\r\n")
+    opens("tabs", 36, "\t".join(W[36]))
+    opens("commas", 36, ", ".join(W[36]))
+    opens("json-list", 48, json.dumps(f4[48]), f4[48])
+    opens("bullets", 56, "".join("• %s\n" % w for w in W[56]))
+    opens("nbsp", 36, " ".join(W[36]))
+    opens("zero-width-space", 48, "​".join(W[48]))
+    opens("bom", 56, "".join("﻿" + w for w in W[56]))
+    opens("dashes", 36, "".join(w + ("–" if i % 2 else "—") for i, w in enumerate(W[36])))
+    opens("curly-quotes", 48, " ".join(("“%s”" if i % 2 else "‘%s’") % w for i, w in enumerate(W[48])))
+    opens("full-width", 56, "　".join(("%d．%s，" % (i + 1, w)).translate(FULL_WIDTH_DIGITS)
+                                         for i, w in enumerate(W[56])))
+    # Numbered: the numbers are 1 to n in text order, so the order stays.
+    for (nm, fmt), m in zip((("number-space", "%d %s"), ("number-dot", "%d. %s"), ("number-paren", "%d) %s"),
+                             ("number-parens", "(%d) %s"), ("number-colon", "%d: %s"), ("number-hash", "#%d %s"),
+                             ("number-zeros", "%02d %s")), (36, 48, 56, 36, 48, 56, 36)):
+        opens(nm, m, numbered(fmt, W[m]))
+    opens("number-glued", 48, numbered("%d.%s", f4[48], sep=""), f4[48])
+    opens("rows-of-four", 56, "".join("%d %s%s" % (i + 1, w, "\n" if i % 4 == 3 else "  ") for i, w in enumerate(W[56])))
+    # First letters, run together, case.
+    opens("first-four-spaced", 48, " ".join(f4[48]), f4[48])
+    opens("first-four-run-together", 56, "".join(f4[56]), f4[56])
+    opens("run-together", 36, "".join(W[36]))
+    opens("run-together", 48, "".join(W[48]))
+    mixed = []
+    for i, w in enumerate(W[56]):
+        piece = w[:4 + i % (len(w) - 3)]
+        mixed.append((piece.upper(), piece.title(), piece)[i % 3])
+    opens("mixed-run-together", 56, "".join(mixed), mixed)
+    # A grid copied column by column.
+    for m in (36, 48):
+        rows = m // 4
+        order = [r * 4 + col for col in range(4) for r in range(rows)]
+        opens("columns", m, "".join("%d. %s\n" % (i + 1, W[m][i]) for i in order))
+    rows = 12
+    order = [r * 4 + col for col in range(4) for r in range(rows)]
+    refused("columns-numbered-from-0", 48, "".join("%d. %s\n" % (i, W[48][i]) for i in order),
+            "words_do_not_check", "a grid copied column by column, numbered 0 to 47: not 1 to 48, so the numbers only separate and the words stay in column order")
+    opens("numbered-from-2", 36, "".join("%d %s\n" % (i + 2, w) for i, w in enumerate(W[36])))
+    # Hyphens at a line break.
+    j = next(i for i, w in enumerate(W[56]) if len(w) >= 6 and i > 4)
+    w = W[56][j]
+    opens("hyphen-break", 56, " ".join(W[56][:j]) + " " + w[:3] + "-\n" + w[3:] + " " + " ".join(W[56][j + 1:]))
+    j = next(i for i, w in enumerate(W[36]) if len(w) >= 7 and i > 10)
+    w = W[36][j]
+    opens("hyphen-crlf", 36, "\n".join(W[36][:j]) + "\n" + w[:4] + "- \r\n\t" + w[4:] + "\n" + "\n".join(W[36][j + 1:]))
+    # Unreadable positions.
+    g = list(W[48])
+    g[5], g[20] = "?", "??"
+    opens("question-marks", 48, " ".join(g), g, [5, 20])
+    i = 12
+    g = list(f4[36])
+    g[i + 1] = "?"
+    opens("question-mark-between", 36, " ".join(f4[36][:i]) + " " + g[i] + "?" + g[i + 2] + " " + " ".join(f4[36][i + 3:]),
+          g, [i + 1])
+    i = next(i for i, w in enumerate(W[56]) if "e" in w)
+    g = list(W[56])
+    g[i] = g[i].replace("e", "é", 1)
+    opens("combining-accent", 56, " ".join(g), g, [i])
+    i = next(i for i, w in enumerate(W[48]) if "k" in w)
+    g = list(W[48])
+    g[i] = g[i].replace("k", "K")
+    opens("kelvin-sign", 48, " ".join(g), g, [i])
+    i = next(i for i, w in enumerate(W[36]) if len(w) == 8)
+    g = list(W[36])
+    g[i] = g[i] + "s"
+    opens("nine-letters", 36, " ".join(g), g, [i])
+    # A heading pasted with the words: two more positions, so not AQRV words.
+    refused("heading", 48, "AQRV words:\n" + numbered("%d. %s", W[48]), "not_aqrv_words",
+            "50 positions: the heading's AQRV and words are two positions, unreadable, before the 48 words")
+    # Ambiguous: two readings, two envelopes.
+    text, first, second, unr = _ambiguous(word_values(full_of[48][1]))
+    refused("ambiguous", 48, text, "ambiguous",
+            "three runs each cut two ways and positions %s are unreadable: the reading with %s, %s and %s fills to one envelope "
+            "and the reading with %s, %s and %s to another" % (
+                ", ".join(str(p + 1) for p in unr), *(WORDS[first[b]] for b in (10, 20, 30)),
+                *(WORDS[second[b]] for b in (10, 20, 30))),
+            src="crafted from %s" % full_of[48][3])
+    # Too many.
+    refused("advocate-56", 56, "advocate" * 56, "too_many", "advocate 56 times with no separators: more than 1024 cuts")
+    t = " ".join(W[48])
+    opens("16384-bytes", 48, t + " " * (TEXT_MAX_BYTES - len(t.encode())))
+    refused("16385-bytes", 48, t + " " * (TEXT_MAX_BYTES + 1 - len(t.encode())), "too_many",
+            "the words and spaces to 16385 bytes, one over the limit")
+
+    for e in out:
+        _text_chars_ok(e["text"])
+        got = read_words_text(e["text"], e["passphrase"])
+        want = e["expect"]
+        if want["outcome"] == "opens":
+            assert got == want, (e["name"], got, want)
+        else:
+            assert got["outcome"] == want["outcome"], (e["name"], got)
+    names = [e["name"] for e in out]
+    assert len(set(names)) == len(names)
+    return out
+
+
 def build():
     cases = []
 
@@ -1450,7 +1869,9 @@ def build():
                 assert (got["unreadable"], got["wrong"], got["envelope"], got["kind"], got["item"]) == (
                     [], [], c["envelope"], c["expect"]["kind"], c["expect"]["item"]), c["name"]
     case_of = {c["name"]: c for c in cases}
-    words_cases = build_words({n: base[n] + (case_of[base[n][2]]["expect"],) for n in (37, 53, 62)})
+    words_bases = {n: base[n] + (case_of[base[n][2]]["expect"],) for n in (37, 53, 62)}
+    words_cases = build_words(words_bases)
+    words_text_cases = build_words_text(words_bases)
 
     doc = {
         "about": "Test vectors for the Argon QR Vault (AQRV), AQRV.md section 11. See README.md. Written by gen.py.",
@@ -1466,6 +1887,8 @@ def build():
                 "does_not_open": "recognised, asks for the passphrase, and reports that the code does not open",
                 "not_recognised": "not treated as AQRV: no passphrase is asked for",
                 "words_do_not_check": "words only: the words fail their check and no correction with 2e + f <= 4 makes them pass; no passphrase is asked for, and the reader says so in words distinct from does_not_open",
+                "ambiguous": "words from text only: readings of the text give different envelopes, or one gives an envelope and another is not AQRV words; no passphrase is asked for",
+                "too_many": "words from text only: text over 16384 bytes, a run with more than 1024 cuts, or more than 1024 readings; no passphrase is asked for",
                 "not_aqrv_words": "words only: other than 36, 48 or 56 words, or words that check but whose unused bits are not 0 or whose step is not defined; no passphrase is asked for",
             },
             "words": {
@@ -1482,17 +1905,27 @@ def build():
                            "words": m + WORDS_CHECK, "unused_bits": u} for n, (b, m, u) in WORDS_TABLE.items()],
                 "correction_rule": "2e + f <= 4, e wrong words changed and f unreadable positions filled",
             },
+            "words_text": {
+                "max_text_bytes": TEXT_MAX_BYTES,
+                "max_cuts_of_a_run": TEXT_MAX_CUTS,
+                "max_readings": TEXT_MAX_READINGS,
+                "max_positions": TEXT_MAX_POSITIONS,
+                "piece_letters": [4, 8],
+                "marks": ["U+%04X-U+%04X" % r for r in MARK_RANGES],
+                "letter": "Unicode's Alphabetic property",
+            },
         },
         "cases": cases,
         "writer_refuses": writer_refuses,
         "qr": qrs,
         "qr_text": text_cases,
         "words": words_cases,
+        "words_text": words_text_cases,
     }
     text = json.dumps(doc, indent=1, ensure_ascii=True) + "\n"
     out = {"aqrv.json": text.encode()}
     out.update(pngs)
-    return out, (len(cases), len(words_cases))
+    return out, (len(cases), len(words_cases), len(words_text_cases))
 
 
 def main():
@@ -1512,7 +1945,7 @@ def main():
         else:
             with open(path, "wb") as f:
                 f.write(data)
-    print("%d cases, %d words cases, %d files, %.1f s%s" % (n[0], n[1], len(files), time.time() - t0, ", all identical" if args.check and not bad else ""))
+    print("%d cases, %d words cases, %d words_text cases, %d files, %.1f s%s" % (n[0], n[1], n[2], len(files), time.time() - t0, ", all identical" if args.check and not bad else ""))
     return 1 if bad else 0
 
 

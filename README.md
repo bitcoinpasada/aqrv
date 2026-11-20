@@ -15,7 +15,7 @@ it.
 | Path | What it holds |
 |---|---|
 | [`AQRV.md`](AQRV.md) | the specification: the envelope (§3), the words form (§3.2), the header (§4), memory steps (§5), keys, encryption and the tag (§6), false matches (§8), recognition (§9), the passphrase (§10), test vectors (§11), security analysis (§12), questions for an outside cryptographer (§13), comparison with KEF and an OpenPGP QR vault (§14) |
-| [`vectors/aqrv.json`](vectors/aqrv.json) | 195 test cases, each with its inputs, every intermediate value and the expected outcome, the words of each envelope a sheet of words can hold, and 51 entries of words to read: corrected, not checking, not AQRV words, and named by their first letters |
+| [`vectors/aqrv.json`](vectors/aqrv.json) | 195 test cases, each with its inputs, every intermediate value and the expected outcome, the words of each envelope a sheet of words can hold, 51 entries of words to read: corrected, not checking, not AQRV words, and named by their first letters, and 47 texts of words to read as pasted: separators, numbers, words run together, unreadable runs, ambiguous and too many |
 | [`vectors/qr-32.png`](vectors/qr-32.png), [`qr-53.png`](vectors/qr-53.png), [`qr-62.png`](vectors/qr-62.png) | the QR code of one case at each size |
 | [`vectors/gen.py`](vectors/gen.py) | writes the vectors; `--check` compares without writing |
 | [`vectors/check.py`](vectors/check.py) | a second reader and writer, written from the specification alone, run over every case |
